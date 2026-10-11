@@ -65,6 +65,39 @@ def test_external_mount_is_not_walked(tmp_path: Path) -> None:
     assert found == ["main.txt"]
 
 
+def test_home_noise_is_excluded(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "note.txt").write_text("keep", encoding="utf-8")
+    skipped = (
+        "node_modules",
+        ".venv",
+        ".cache",
+        ".config",
+        "@eaDir",
+        "#recycle",
+        "Family.photoslibrary",
+        "Mail.app",
+    )
+    for name in skipped:
+        folder = root / name
+        folder.mkdir()
+        (folder / "secret.txt").write_text("leave this", encoding="utf-8")
+    found = sorted(path.name for path in iter_library_files(root, lambda _path: True))
+    assert found == ["note.txt"]
+    nested = root / ".venv" / "lib.txt"
+    assert classify(nested, max_bytes=1000).reason == "junk-directory"
+    song = root / "song.mp3"
+    song.write_bytes(b"ID3")
+    assert classify(song, max_bytes=1000).reason == "audio"
+    database = root / "cache.sqlite"
+    database.write_bytes(b"SQLite format 3")
+    assert classify(database, max_bytes=1000).reason == "binary"
+    office_lock = root / "~$budget.xlsx"
+    office_lock.write_bytes(b"lock")
+    assert classify(office_lock, max_bytes=1000).reason == "junk-name"
+
+
 def test_external_drive_signals() -> None:
     assert looks_external(removable="1\n", mount_source=None)
     assert looks_external(removable="0", mount_source="/dev/sdb1") is False

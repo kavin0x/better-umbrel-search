@@ -43,6 +43,7 @@ class IndexStatus:
     priority_folder: str | None
     library_total: int
     progress: int | None
+    current_file: str | None
 
 
 @strawberry.type
@@ -117,6 +118,7 @@ class Query:
             priority_folder=None if snap.get("priority_folder") is None else str(snap["priority_folder"]),
             library_total=int(snap["library_total"]),
             progress=None if snap["progress"] is None else int(snap["progress"]),
+            current_file=None if snap.get("current_file") is None else str(snap["current_file"]),
         )
 
     @strawberry.field
@@ -151,6 +153,14 @@ class Mutation:
             return _app(info).indexer.prioritize(path)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
+
+    @strawberry.mutation
+    def stop_indexing(self, info: Info) -> str:
+        return _app(info).indexer.halt_indexing()
+
+    @strawberry.mutation
+    def resume_indexing(self, info: Info) -> str:
+        return _app(info).indexer.resume_indexing()
 
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)

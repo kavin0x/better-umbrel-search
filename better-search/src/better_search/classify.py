@@ -11,22 +11,123 @@ logger = logging.getLogger(__name__)
 
 JUNK_NAMES = {
     ".ds_store",
+    ".DS_Store",
     "thumbs.db",
+    "ehthumbs.db",
+    "ehthumbs_vista.db",
     "desktop.ini",
     ".localized",
+    ".dropbox",
+    ".dropbox.attr",
+    ".picasa.ini",
+    ".apdisk",
+    ".volumeicon.icns",
+    ".com.apple.timemachine.donotpresent",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "swapfile.sys",
+    "icon\r",
 }
 
 JUNK_DIRS = {
-    "system volume information",
+    "System Volume Information",
     "$recycle.bin",
-    ".trashes",
-    ".spotlight-v100",
+    "$Windows.~BT",
+    "$Windows.~WS",
+    "Windows.~BT",
+    "Windows.~WS",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "AppData",
+    "Application Data",
+    "PerfLogs",
+    "msocache",
+    "config.msi",
+    ".Trashes",
+    ".Trash",
+    ".Trash-1000",
+    ".Spotlight-V100",
     ".fseventsd",
-    ".temporaryitems",
+    ".TemporaryItems",
+    ".DocumentRevisions-V100",
+    ".MobileBackups",
+    "lost+found",
+    ".snapshots",
+    ".zfs",
+    ".thumbnails",
+    ".dropbox.cache",
+    "@eaDir",
+    "#recycle",
+    "#snapshot",
     ".git",
+    ".svn",
+    ".hg",
+    ".bzr",
     "node_modules",
+    "bower_components",
     "__pycache__",
+    "__pypackages__",
+    ".eggs",
+    "site-packages",
+    ".venv",
+    "venv",
+    ".tox",
+    ".nox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".hypothesis",
+    ".ipynb_checkpoints",
+    ".cache",
+    ".npm",
+    ".pnpm",
+    ".pnpm-store",
+    ".yarn",
+    ".bun",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".parcel-cache",
+    ".turbo",
+    ".gradle",
+    ".m2",
+    ".cargo",
+    ".rustup",
+    ".pyenv",
+    ".nvm",
+    ".conda",
+    ".anaconda",
+    "anaconda3",
+    "miniconda3",
+    ".docker",
+    ".vagrant",
+    ".terraform",
+    ".serverless",
+    ".idea",
+    ".vscode",
+    ".vs",
+    "deriveddata",
+    ".local",
+    ".config",
+    ".var",
+    ".steam",
+    ".mozilla",
+    ".thunderbird",
 }
+
+BUNDLE_DIR_SUFFIXES = (
+    ".app",
+    ".photoslibrary",
+    ".musiclibrary",
+    ".tvlibrary",
+    ".aplibrary",
+    ".bundle",
+    ".framework",
+    ".kext",
+    ".plugin",
+    ".sparsebundle",
+)
 
 VIDEO_EXT = {
     ".mp4",
@@ -41,6 +142,36 @@ VIDEO_EXT = {
     ".mpg",
     ".m2ts",
     ".ts",
+    ".3gp",
+    ".3g2",
+    ".ogv",
+    ".mts",
+    ".m2v",
+    ".vob",
+    ".rm",
+    ".rmvb",
+    ".asf",
+    ".divx",
+    ".f4v",
+    ".hevc",
+}
+
+AUDIO_EXT = {
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".flac",
+    ".wav",
+    ".ogg",
+    ".oga",
+    ".opus",
+    ".wma",
+    ".aiff",
+    ".aif",
+    ".alac",
+    ".mid",
+    ".midi",
+    ".caf",
 }
 
 ARCHIVE_EXT = {
@@ -56,6 +187,22 @@ ARCHIVE_EXT = {
     ".dmg",
     ".cab",
     ".zst",
+    ".lz",
+    ".lz4",
+    ".lzma",
+    ".zstd",
+    ".sit",
+    ".sitx",
+    ".ace",
+    ".arj",
+    ".lzh",
+    ".cpio",
+    ".whl",
+    ".egg",
+    ".nupkg",
+    ".ipa",
+    ".jar",
+    ".war",
 }
 
 BINARY_EXT = {
@@ -73,6 +220,39 @@ BINARY_EXT = {
     ".msi",
     ".img",
     ".sys",
+    ".pkg",
+    ".deb",
+    ".rpm",
+    ".appimage",
+    ".snap",
+    ".pyo",
+    ".pyd",
+    ".lib",
+    ".pdb",
+    ".sqlite",
+    ".sqlite3",
+    ".db",
+    ".vmdk",
+    ".vdi",
+    ".qcow2",
+    ".vhd",
+    ".vhdx",
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+    ".eot",
+    ".psd",
+    ".ai",
+    ".sketch",
+    ".fig",
+    ".blend",
+    ".fbx",
+    ".stl",
+    ".dwg",
+    ".bak",
+    ".crdownload",
+    ".part",
 }
 
 DOC_EXT = {
@@ -148,6 +328,25 @@ def _index(file_type: str, mime: str | None = None) -> Decision:
     return Decision("index", file_type, None, mime)
 
 
+_JUNK_DIRS = frozenset(name.casefold() for name in JUNK_DIRS)
+_JUNK_NAMES = frozenset(name.casefold() for name in JUNK_NAMES)
+_BUNDLE_DIR_SUFFIXES = tuple(suffix.casefold() for suffix in BUNDLE_DIR_SUFFIXES)
+
+
+def excluded_dir(name: str) -> bool:
+    folded = name.casefold()
+    return folded in _JUNK_DIRS or folded.endswith(_BUNDLE_DIR_SUFFIXES)
+
+
+def _junk_name(name: str) -> bool:
+    folded = name.casefold()
+    if folded in _JUNK_NAMES or folded.startswith("._"):
+        return True
+    if folded.startswith("~$") or folded.startswith(".~lock."):
+        return True
+    return folded.endswith(("~", ".swp", ".swo", ".tmp"))
+
+
 def default_mime(path: Path) -> str | None:
     try:
         import magic
@@ -167,15 +366,16 @@ def classify(
 ) -> Decision:
     if path.is_symlink():
         return _skip("symlink")
-    name = path.name.casefold()
-    if name in JUNK_NAMES or name.startswith("._"):
+    if _junk_name(path.name):
         return _skip("junk-name")
     for part in path.parts[:-1]:
-        if part.casefold() in JUNK_DIRS:
+        if excluded_dir(part):
             return _skip("junk-directory")
     ext = path.suffix.casefold()
     if ext in VIDEO_EXT:
         return _skip("video")
+    if ext in AUDIO_EXT:
+        return _skip("audio")
     if ext in ARCHIVE_EXT:
         return _skip("archive")
     if ext in BINARY_EXT:
@@ -197,7 +397,9 @@ def classify(
         return _index("document", mime)
     if mime in IMAGE_MIMES:
         return _index("image", mime)
-    if mime and (mime.startswith("video/") or mime.startswith("audio/")):
+    if mime and mime.startswith("audio/"):
+        return _skip("audio", mime)
+    if mime and mime.startswith("video/"):
         return _skip("video", mime)
     if mime in {"application/zip", "application/x-7z-compressed", "application/gzip", "application/x-tar"}:
         return _skip("archive", mime)
@@ -275,7 +477,7 @@ def iter_library_files(root: Path, same_device: Callable[[Path], bool]) -> Itera
         kept: list[str] = []
         for name in dirnames:
             child = current / name
-            if name.casefold() in JUNK_DIRS:
+            if excluded_dir(name):
                 continue
             try:
                 if child.is_symlink() or not same_device(child):

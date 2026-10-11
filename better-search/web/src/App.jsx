@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
-const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError priorityFolder libraryTotal progress } }`;
+const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError priorityFolder libraryTotal progress currentFile } }`;
 
 const SEARCH = `query ($q: String!, $fileType: FileType!, $limit: Int!) {
   search(q: $q, fileType: $fileType, limit: $limit) {
@@ -11,6 +11,8 @@ const SEARCH = `query ($q: String!, $fileType: FileType!, $limit: Int!) {
 }`;
 
 const PRIORITIZE = `mutation ($path: String!) { prioritizeFolder(path: $path) }`;
+const STOP_INDEXING = `mutation { stopIndexing }`;
+const RESUME_INDEXING = `mutation { resumeIndexing }`;
 
 const FILTERS = [
   { id: "ALL", label: "All" },
@@ -53,18 +55,21 @@ function progressLabel(status) {
   return `${seen} files`;
 }
 
-function statusCopy(status) {
-  if (!status) return "Starting";
-  if (status.state === "waiting-for-library") return "Waiting for the main disk";
-  if (status.state === "external-drive-blocked") return "External drive blocked";
+function statusParts(status) {
+  if (!status) return { label: "Starting", file: "" };
+  if (status.state === "waiting-for-library") return { label: "Waiting for the main disk", file: "" };
+  if (status.state === "external-drive-blocked") return { label: "External drive blocked", file: "" };
+  if (status.state === "stopped") {
+    return { label: `Indexing stopped · ${status.filesIndexed.toLocaleString()} indexed`, file: "" };
+  }
   if (status.state === "indexing") {
     const progress = progressLabel(status);
-    if (status.priorityFolder) return `Indexing ${status.priorityFolder} first · ${progress}`;
-    return `Indexing ${progress}`;
+    const prefix = status.priorityFolder && !status.currentFile ? `Indexing ${status.priorityFolder} first` : "Indexing";
+    return { label: `${prefix} · ${progress}`, file: status.currentFile || "" };
   }
   const settled = `${status.filesIndexed.toLocaleString()} indexed · ${status.filesSkipped.toLocaleString()} skipped`;
-  if (status.state === "watching") return `${settled} · new files index automatically`;
-  return settled;
+  if (status.state === "watching") return { label: `${settled} · new files index automatically`, file: "" };
+  return { label: settled, file: "" };
 }
 
 export function App() {
@@ -75,6 +80,7 @@ export function App() {
   const [status, setStatus] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [indexAction, setIndexAction] = useState(false);
 
   useEffect(() => {
     let stop = false;
@@ -87,7 +93,7 @@ export function App() {
       }
     };
     tick();
-    const id = setInterval(tick, 2000);
+    const id = setInterval(tick, 1000);
     return () => {
       stop = true;
       clearInterval(id);
@@ -119,6 +125,25 @@ export function App() {
 
   const busy = status?.state === "indexing" || status?.state === "waiting-for-library" || Boolean(status?.priorityFolder);
 
+  async function refreshStatus() {
+    const data = await gql(STATUS);
+    setStatus(data.status);
+  }
+
+  async function toggleIndexing() {
+    if (!status || indexAction) return;
+    setIndexAction(true);
+    try {
+      await gql(status.state === "stopped" ? RESUME_INDEXING : STOP_INDEXING);
+      await refreshStatus();
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIndexAction(false);
+    }
+  }
+
   async function submitPriority(event) {
     event.preventDefault();
     const path = folder.trim();
@@ -133,6 +158,8 @@ export function App() {
       setError(err.message);
     }
   }
+  const parts = statusParts(status);
+  const canToggle = status?.state === "indexing" || status?.state === "watching" || status?.state === "stopped";
   const motionProps = useMemo(
     () =>
       reduce
@@ -149,13 +176,32 @@ export function App() {
     <main className="app">
       <header className="top">
         <h1 className="wordmark">Search</h1>
-        <p className="status">
+        <p className="status" aria-live="polite">
           <motion.span
             className={busy ? "dot busy" : "dot"}
             animate={reduce || !busy ? undefined : { opacity: [0.35, 1, 0.35] }}
             transition={{ repeat: Infinity, duration: 1.6 }}
           />
-          {statusCopy(status)}
+          <span className="status-copy">
+            {parts.file ? (
+              <span className="status-file" title={parts.file}>
+                {parts.file}
+              </span>
+            ) : null}
+            <span className="status-counts">{parts.label}</span>
+          </span>
+          {canToggle ? (
+            <motion.button
+              type="button"
+              className="index-toggle"
+              onClick={toggleIndexing}
+              disabled={indexAction}
+              whileTap={reduce ? undefined : { scale: 0.96 }}
+              aria-label={status.state === "stopped" ? "Resume indexing" : "Stop indexing"}
+            >
+              {status.state === "stopped" ? "Resume" : "Stop"}
+            </motion.button>
+          ) : null}
         </p>
         {status?.state === "indexing" && typeof status.progress === "number" ? (
           <div

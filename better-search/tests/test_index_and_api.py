@@ -1,4 +1,6 @@
-from better_search.indexer import scan_progress
+import time
+
+from better_search.indexer import relative_to_library, scan_progress
 
 
 def test_scan_progress_stays_under_100_until_the_walk_finishes() -> None:
@@ -299,6 +301,81 @@ def test_external_library_is_not_indexed(stack, monkeypatch) -> None:
     names = [hit["name"] for hit in response.json()["data"]["search"]["hits"]]
     assert "extra.txt" not in names
     assert stack.app.state.search.db.get_file("extra.txt") is None
+
+
+def test_stop_names_the_current_file_and_leaves_the_rest(stack) -> None:
+    (stack.library / "held-back.txt").write_text("held back from the scan", encoding="utf-8")
+    (stack.library / "also-held.txt").write_text("also held back", encoding="utf-8")
+    calls: list[str] = []
+    original = stack.indexer._index_one
+
+    def wrapped(path) -> None:
+        original(path)
+        relative = relative_to_library(stack.library, path)
+        assert stack.indexer.current_file == relative
+        body = stack.client.post(
+            "/graphql",
+            json={"query": "{ status { state currentFile } }"},
+        ).json()
+        assert body["data"]["status"]["state"] == "indexing"
+        assert body["data"]["status"]["currentFile"] == relative
+        calls.append(path.name)
+        stack.indexer.halt_indexing()
+
+    stack.indexer._index_one = wrapped
+    stack.indexer.full_scan()
+    assert len(calls) == 1
+    assert stack.indexer.state == "stopped"
+    assert stack.indexer.current_file is None
+    db = stack.app.state.search.db
+    assert db.get_file("notes/roof.txt") is not None
+    missed = [name for name in ("held-back.txt", "also-held.txt") if name not in calls]
+    assert missed
+    for name in missed:
+        assert db.get_file(name) is None
+    stack.indexer._index_one = original
+    resumed = stack.client.post("/graphql", json={"query": "mutation { resumeIndexing }"}).json()
+    assert resumed["data"]["resumeIndexing"] == "idle"
+    stack.rescan()
+    assert stack.indexer.state == "watching"
+    assert db.get_file("held-back.txt")["status"] == "indexed"
+    assert db.get_file("also-held.txt")["status"] == "indexed"
+
+
+def test_stop_and_resume_mutations_hold_the_walker(stack) -> None:
+    stopped = stack.client.post("/graphql", json={"query": "mutation { stopIndexing }"}).json()
+    assert stopped["data"]["stopIndexing"] == "stopped"
+    status = stack.client.post(
+        "/graphql",
+        json={"query": "{ status { state currentFile } }"},
+    ).json()["data"]["status"]
+    assert status["state"] == "stopped"
+    assert status["currentFile"] is None
+    (stack.library / "after-stop.txt").write_text("wait until resume", encoding="utf-8")
+    stack.rescan()
+    assert stack.app.state.search.db.get_file("after-stop.txt") is None
+    assert stack.indexer.state == "stopped"
+    stack.client.post("/graphql", json={"query": "mutation { resumeIndexing }"})
+    stack.rescan()
+    assert stack.app.state.search.db.get_file("after-stop.txt")["status"] == "indexed"
+
+
+def test_indexer_thread_stays_stopped_until_resume(stack) -> None:
+    stack.indexer.rescan_interval = 60
+    stack.indexer.halt_indexing()
+    stack.indexer.start()
+    try:
+        deadline = time.monotonic() + 2
+        while stack.indexer.state != "stopped" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert stack.indexer.state == "stopped"
+        stack.indexer.resume_indexing()
+        deadline = time.monotonic() + 3
+        while stack.indexer.state != "watching" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert stack.indexer.state == "watching"
+    finally:
+        stack.indexer.stop()
 
 
 def test_skipped_files_are_recorded(stack) -> None:

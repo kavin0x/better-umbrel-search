@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.2.1"
+version: "0.3.0"
 port: 8787
 storage:
   dataRoot: data
@@ -28,9 +28,9 @@ repo: https://umbrel.com
 support: https://umbrel.com
 submission: https://umbrel.com
 releaseNotes: >-
-  The status line keeps the file count while a folder is indexed first, and
-  shows how much of the library is done. New files are indexed as they appear,
-  including during a scan.
+  Stop pauses indexing until you resume, and the status line names the file
+  currently being indexed. Caches, developer folders, app bundles, audio, and
+  other home-folder noise are skipped.
 gallery: []
 dependencies: []
 path: ""

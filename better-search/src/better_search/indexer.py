@@ -104,6 +104,8 @@ class Indexer:
         self.scan_token = ""
         self.rescan_interval = 900
         self._stop = threading.Event()
+        self._cancel = threading.Event()
+        self.current_file: str | None = None
         self._thread: threading.Thread | None = None
         self._observer: Observer | None = None
         self._same = None
@@ -125,6 +127,30 @@ class Indexer:
         if self._thread is not None:
             self._thread.join(timeout=3)
             self._thread = None
+
+    def halt_indexing(self) -> str:
+        """Stop the current scan and later rescans until resume_indexing."""
+        self._cancel.set()
+        if self.state != "indexing":
+            self.state = "stopped"
+            self.current_file = None
+        return "stopped"
+
+    def resume_indexing(self) -> str:
+        self._cancel.clear()
+        if self.state == "stopped":
+            self.state = "idle"
+        return self.state
+
+    def _halted(self) -> bool:
+        return self._stop.is_set() or self._cancel.is_set()
+
+    def _settle_cancel(self) -> bool:
+        if self._stop.is_set() or not self._cancel.is_set():
+            return False
+        self.state = "stopped"
+        self.current_file = None
+        return True
 
     def snapshot(self) -> dict[str, int | str | None]:
         if self.state == "indexing":
@@ -152,6 +178,7 @@ class Indexer:
             "priority_folder": self.priority_folder(),
             "library_total": total,
             "progress": scan_progress(seen, total, self.state),
+            "current_file": self.current_file if self.state == "indexing" else None,
         }
 
     def priority_folder(self) -> str | None:
@@ -177,6 +204,8 @@ class Indexer:
         return cleaned
 
     def full_scan(self) -> None:
+        if self._settle_cancel():
+            return
         if not self.library.exists():
             self.state = "waiting-for-library"
             return
@@ -199,26 +228,30 @@ class Indexer:
             counted = 0
             for _path in iter_library_files(self.library, self._same):
                 counted += 1
-                if self._stop.is_set():
+                if self._halted():
                     self.library_total = counted
+                    self._settle_cancel()
                     return
             self.library_total = counted
         walker = iter_library_files(self.library, self._same)
-        while not self._stop.is_set():
+        while not self._halted():
             self.drain()
             self._drain_priority()
-            if self._stop.is_set():
-                return
+            if self._halted():
+                break
             try:
                 path = next(walker)
             except StopIteration:
                 break
             self._index_one(path)
+        if self._settle_cancel() or self._stop.is_set():
+            return
         self.drain()
         removed = self.db.delete_stale(self.scan_token)
         if removed:
             logger.info("removed %s files that left the main disk", removed)
         if self.state == "indexing":
+            self.current_file = None
             self.state = "watching"
 
     def _drain_priority(self) -> None:
@@ -232,7 +265,7 @@ class Indexer:
         try:
             if root.is_dir() and self._same(root):
                 for child in iter_library_files(root, self._same):
-                    if self._stop.is_set():
+                    if self._halted():
                         return
                     self.drain()
                     self._index_one(child)
@@ -263,6 +296,8 @@ class Indexer:
                 if self._same is None:
                     continue
                 for child in iter_library_files(path, self._same):
+                    if self._halted():
+                        return
                     self._index_one(child)
                 continue
             self._index_one(path)
@@ -273,6 +308,9 @@ class Indexer:
         relative = relative_to_library(self.library, path)
         if relative is None or not path.is_file():
             return
+        if self._halted():
+            return
+        self.current_file = relative
         if relative in self._visited:
             self.db.touch_scan(relative, self.scan_token)
             return
@@ -397,6 +435,11 @@ class Indexer:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            if self._cancel.is_set():
+                self.state = "stopped"
+                self.current_file = None
+                self._stop.wait(0.5)
+                continue
             if not self.library.exists():
                 self.state = "waiting-for-library"
                 self._stop.wait(2)
@@ -408,11 +451,17 @@ class Indexer:
                 continue
             self._ensure_watcher()
             self.full_scan()
+            if self._cancel.is_set():
+                self.state = "stopped"
+                self.current_file = None
+                continue
             if self.state == "external-drive-blocked":
                 self._stop.wait(15)
                 continue
             deadline = time.monotonic() + self.rescan_interval
             while not self._stop.is_set() and time.monotonic() < deadline:
+                if self._cancel.is_set():
+                    break
                 self.state = "watching"
                 self.drain()
                 self._drain_priority()
