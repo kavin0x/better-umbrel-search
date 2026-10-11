@@ -1,0 +1,26 @@
+manifestVersion: 1
+id: better-search
+name: Search
+tagline: Semantic search for the main disk
+icon: icon.svg
+category: files
+version: "0.1.0"
+port: 8787
+description: >-
+  Search documents and photos on the main disk. The first run indexes what is
+  already there, and new files are picked up as they appear. USB drives and
+  other external disks are not indexed, even when they are mounted inside the
+  library folder. In the app settings, add your Home folder on internal storage
+  to the app service at /library, read-only.
+developer: Better Search
+website: https://umbrel.com
+repo: https://umbrel.com
+support: https://umbrel.com
+submission: https://umbrel.com
+releaseNotes: >-
+  Initial release. Hybrid keyword and semantic search for documents and photos
+  on the main disk.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

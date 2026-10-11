@@ -1,0 +1,21 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: better-search_app_1
+      APP_PORT: 8787
+
+  app:
+    build: .
+    restart: on-failure
+    stop_grace_period: 1m
+    init: true
+    user: "1000:1000"
+    environment:
+      LIBRARY_PATH: /library
+      DATA_PATH: /data
+      STAY_ON_MAIN_DEVICE: "1"
+      OCR_ENABLED: "1"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data

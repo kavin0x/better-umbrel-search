@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+import logging
+import queue
+import threading
+import time
+import uuid
+from pathlib import Path
+
+import xxhash
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from better_search.chunk import chunks_from_pages
+from better_search.classify import (
+    Decision,
+    classify,
+    device_predicate,
+    iter_library_files,
+    library_is_external,
+)
+from better_search.config import Settings
+from better_search.db import Database
+from better_search.embed import Embedder
+from better_search.extract import (
+    ImageInfo,
+    default_ocr_image,
+    default_ocr_page,
+    extract_document,
+    extract_image,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def file_hash(path: Path) -> str:
+    digest = xxhash.xxh3_64()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def relative_to_library(library: Path, path: Path) -> str | None:
+    try:
+        library_root = library.resolve()
+        relative = path.resolve(strict=False).relative_to(library_root)
+    except (OSError, ValueError):
+        return None
+    if ".." in relative.parts:
+        return None
+    return relative.as_posix()
+
+
+class _Handler(FileSystemEventHandler):
+    def __init__(self, indexer: Indexer) -> None:
+        self.indexer = indexer
+
+    def on_created(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.indexer.events.put((Path(event.src_path), bool(event.is_directory), False))
+
+    def on_modified(self, event) -> None:  # type: ignore[no-untyped-def]
+        if not event.is_directory:
+            self.indexer.events.put((Path(event.src_path), False, False))
+
+    def on_deleted(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.indexer.events.put((Path(event.src_path), bool(event.is_directory), True))
+
+    def on_moved(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.indexer.events.put((Path(event.src_path), bool(event.is_directory), True))
+        self.indexer.events.put((Path(event.dest_path), bool(event.is_directory), False))
+
+
+class Indexer:
+    """Indexes every supported file already on the main disk, then new ones.
+
+    External drives are not entered. A library root that itself sits on a
+    removable disk or a USB mount is refused.
+    """
+
+    def __init__(self, settings: Settings, db: Database, embedder: Embedder) -> None:
+        self.settings = settings
+        self.library = settings.library_path
+        self.db = db
+        self.embedder = embedder
+        self.state = "idle"
+        self.files_seen = 0
+        self.files_indexed = 0
+        self.files_skipped = 0
+        self.files_failed = 0
+        self.last_error: str | None = None
+        self.events: queue.Queue[tuple[Path, bool, bool]] = queue.Queue()
+        self.scan_token = ""
+        self.rescan_interval = 900
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._observer: Observer | None = None
+        self._same = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="better-search-index", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._stop_watcher()
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+            self._thread = None
+
+    def snapshot(self) -> dict[str, int | str | None]:
+        if self.state == "indexing":
+            seen, indexed, skipped, failed = (
+                self.files_seen,
+                self.files_indexed,
+                self.files_skipped,
+                self.files_failed,
+            )
+        else:
+            counts = self.db.counts()
+            seen = counts["seen"]
+            indexed = counts["indexed"]
+            skipped = counts["skipped"]
+            failed = counts["failed"]
+        return {
+            "state": self.state,
+            "files_seen": seen,
+            "files_indexed": indexed,
+            "files_skipped": skipped,
+            "files_failed": failed,
+            "last_error": self.last_error,
+        }
+
+    def full_scan(self) -> None:
+        if not self.library.exists():
+            self.state = "waiting-for-library"
+            return
+        if self.settings.stay_on_main_device and library_is_external(self.library):
+            self.state = "external-drive-blocked"
+            self.last_error = "The library is on an external drive, so nothing was indexed."
+            return
+        self._same = device_predicate(self.library) if self.settings.stay_on_main_device else _always_same
+        self.scan_token = uuid.uuid4().hex
+        self.state = "indexing"
+        self.files_seen = 0
+        self.files_indexed = 0
+        self.files_skipped = 0
+        self.files_failed = 0
+        self.last_error = None
+        for path in iter_library_files(self.library, self._same):
+            if self._stop.is_set():
+                return
+            self._index_one(path)
+        self.drain()
+        removed = self.db.delete_stale(self.scan_token)
+        if removed:
+            logger.info("removed %s files that left the main disk", removed)
+        if self.state == "indexing":
+            self.state = "watching"
+
+    def drain(self) -> None:
+        while True:
+            try:
+                path, is_dir, deleted = self.events.get_nowait()
+            except queue.Empty:
+                return
+            relative = relative_to_library(self.library, path)
+            if relative is None:
+                continue
+            if deleted:
+                if is_dir:
+                    self.db.delete_prefix(relative)
+                else:
+                    self.db.delete_path(relative)
+                continue
+            if is_dir:
+                if self._same is not None and not self._same(path):
+                    logger.info("skip external mount %s", path)
+                    continue
+                if self._same is None:
+                    continue
+                for child in iter_library_files(path, self._same):
+                    self._index_one(child)
+                continue
+            self._index_one(path)
+
+    def _index_one(self, path: Path) -> None:
+        if self._same is not None and path.exists() and not self._same(path):
+            return
+        relative = relative_to_library(self.library, path)
+        if relative is None or not path.is_file():
+            return
+        self.files_seen += 1
+        try:
+            stat_result = path.stat()
+        except OSError as exc:
+            self.files_failed += 1
+            self.last_error = f"{relative}: {exc}"
+            return
+        decision = classify(path, max_bytes=self.settings.max_file_bytes)
+        if decision.action == "skip":
+            existing = self.db.unchanged(relative, stat_result.st_size, stat_result.st_mtime)
+            if existing is not None and existing["status"] == "skipped":
+                self.db.touch_scan(relative, self.scan_token)
+                self.files_skipped += 1
+                return
+            self.db.mark_simple(
+                path=relative,
+                name=path.name,
+                mime=decision.mime,
+                size=stat_result.st_size,
+                mtime=stat_result.st_mtime,
+                status="skipped",
+                reason=decision.reason,
+                scan_token=self.scan_token,
+            )
+            self.files_skipped += 1
+            return
+        existing = self.db.unchanged(relative, stat_result.st_size, stat_result.st_mtime)
+        if existing is not None and existing["status"] == "indexed":
+            self.db.touch_scan(relative, self.scan_token)
+            self.files_indexed += 1
+            return
+        try:
+            digest = file_hash(path)
+        except OSError as exc:
+            self._fail(relative, path.name, decision.mime, stat_result.st_size, stat_result.st_mtime, exc)
+            return
+        previous_hash = self.db.hash_of(relative)
+        if previous_hash == digest and existing is None:
+            row = self.db.get_file(relative)
+            if row is not None and row["status"] == "indexed":
+                self.db.note_hash_only(relative, stat_result.st_size, stat_result.st_mtime, self.scan_token)
+                self.files_indexed += 1
+                return
+        try:
+            self._store(path, relative, decision.file_type, decision.mime, stat_result, digest)
+            self.files_indexed += 1
+        except Exception as exc:
+            logger.exception("failed to index %s", relative)
+            self._fail(relative, path.name, decision.mime, stat_result.st_size, stat_result.st_mtime, exc)
+
+    def _store(self, path: Path, relative: str, file_type: str, mime: str | None, stat_result, digest: str) -> None:
+        captured_at = None
+        if file_type == "image":
+            info: ImageInfo = extract_image(
+                path,
+                ocr_enabled=self.settings.ocr_enabled,
+                ocr_fn=default_ocr_image,
+            )
+            captured_at = info.captured_at
+            body = info.text.strip() or path.stem
+            chunks = [
+                {
+                    "page": None,
+                    "ordinal": 0,
+                    "text": body,
+                    "kind": "image",
+                    "text_vector": self.embedder.embed_passages([f"{path.name}. {body}"])[0],
+                    "image_vector": self.embedder.embed_image(path),
+                }
+            ]
+        else:
+            pieces = extract_document(path, Decision("index", file_type, None, mime))
+            pages = [(piece.text, piece.page) for piece in pieces]
+            packed = chunks_from_pages(pages)
+            if not packed:
+                from better_search.chunk import TextChunk
+
+                packed = [TextChunk(path.stem, 1, 0)]
+            passages = [f"{path.name}. {chunk.text}" for chunk in packed]
+            vectors = self.embedder.embed_passages(passages)
+            chunks = [
+                {
+                    "page": chunk.page,
+                    "ordinal": chunk.ordinal,
+                    "text": chunk.text,
+                    "kind": "text",
+                    "text_vector": vector,
+                    "image_vector": None,
+                }
+                for chunk, vector in zip(packed, vectors, strict=True)
+            ]
+        self.db.store_document(
+            path=relative,
+            name=path.name,
+            mime=mime,
+            file_type=file_type,
+            size=stat_result.st_size,
+            mtime=stat_result.st_mtime,
+            content_hash=digest,
+            captured_at=captured_at,
+            scan_token=self.scan_token,
+            chunks=chunks,
+        )
+
+    def _fail(self, relative: str, name: str, mime: str | None, size: int, mtime: float, exc: Exception) -> None:
+        self.files_failed += 1
+        self.last_error = f"{relative}: {exc}"
+        self.db.mark_simple(
+            path=relative,
+            name=name,
+            mime=mime,
+            size=size,
+            mtime=mtime,
+            status="failed",
+            reason=str(exc),
+            scan_token=self.scan_token,
+        )
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            if not self.library.exists():
+                self.state = "waiting-for-library"
+                self._stop.wait(2)
+                continue
+            if self.settings.stay_on_main_device and library_is_external(self.library):
+                self.state = "external-drive-blocked"
+                self.last_error = "The library is on an external drive, so nothing was indexed."
+                self._stop.wait(15)
+                continue
+            self._ensure_watcher()
+            self.full_scan()
+            if self.state == "external-drive-blocked":
+                self._stop.wait(15)
+                continue
+            deadline = time.monotonic() + self.rescan_interval
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                self.state = "watching"
+                self.drain()
+                self._stop.wait(0.5)
+
+    def _ensure_watcher(self) -> None:
+        if self._observer is not None:
+            return
+        try:
+            observer = Observer()
+            observer.schedule(_Handler(self), str(self.library), recursive=True)
+            observer.start()
+        except Exception:
+            logger.warning("filesystem watch unavailable; scanning every minute", exc_info=True)
+            self.rescan_interval = 60
+            return
+        self._observer = observer
+        self.rescan_interval = 900
+
+    def _stop_watcher(self) -> None:
+        if self._observer is None:
+            return
+        self._observer.stop()
+        self._observer.join(timeout=3)
+        self._observer = None
+
+
+def _always_same(_path: Path) -> bool:
+    try:
+        return not _path.is_symlink()
+    except OSError:
+        return False

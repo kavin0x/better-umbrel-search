@@ -1,0 +1,142 @@
+def test_indexes_existing_files_and_skips_junk(stack) -> None:
+    counts = stack.indexer.snapshot()
+    assert counts["files_indexed"] == 2
+    assert counts["files_skipped"] == 0
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "roof leak") { hits { path name fileType snippet page } } }'},
+    )
+    body = response.json()
+    assert response.status_code == 200, body
+    assert "errors" not in body
+    hits = body["data"]["search"]["hits"]
+    assert hits[0]["path"] == "notes/roof.txt"
+    assert "roof leak" in hits[0]["snippet"]
+    assert hits[0]["fileType"] == "document"
+
+
+def test_second_scan_does_not_reembed(stack) -> None:
+    calls = stack.embedder.passage_calls
+    stack.rescan()
+    assert stack.embedder.passage_calls == calls
+
+
+def test_new_file_is_indexed_on_the_next_scan(stack) -> None:
+    (stack.library / "notes" / "later.txt").write_text(
+        "brand new contract for the porch",
+        encoding="utf-8",
+    )
+    stack.rescan()
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "porch contract") { hits { name } } }'},
+    )
+    names = [hit["name"] for hit in response.json()["data"]["search"]["hits"]]
+    assert "later.txt" in names
+
+
+def test_watcher_drain_indexes_a_new_file(stack) -> None:
+    path = stack.library / "arrived.txt"
+    path.write_text("arrived later on the main disk", encoding="utf-8")
+    stack.indexer.events.put((path, False, False))
+    stack.indexer.drain()
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "arrived later") { hits { name } } }'},
+    )
+    names = [hit["name"] for hit in response.json()["data"]["search"]["hits"]]
+    assert "arrived.txt" in names
+
+
+def test_deleted_file_leaves_the_index(stack) -> None:
+    (stack.library / "notes" / "roof.txt").unlink()
+    stack.rescan()
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "roof leak") { hits { path } } }'},
+    )
+    assert response.json()["data"]["search"]["hits"] == []
+
+
+def test_changed_file_replaces_old_text(stack) -> None:
+    note = stack.library / "notes" / "roof.txt"
+    note.write_text("the porch was painted blue", encoding="utf-8")
+    stack.rescan()
+    found = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "painted porch") { hits { snippet } } }'},
+    ).json()["data"]["search"]["hits"]
+    assert found
+    assert "painted" in found[0]["snippet"]
+
+
+def test_photo_search_and_type_filter(stack) -> None:
+    photos = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "red bike", fileType: IMAGE) { hits { name fileType } } }'},
+    ).json()["data"]["search"]["hits"]
+    assert photos
+    assert photos[0]["name"] == "red-bike.png"
+    assert photos[0]["fileType"] == "image"
+    documents = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "red bike", fileType: DOCUMENT) { hits { name } } }'},
+    ).json()["data"]["search"]["hits"]
+    assert all(hit["name"] != "red-bike.png" for hit in documents)
+
+
+def test_status_and_file_query(stack) -> None:
+    status = stack.client.post(
+        "/graphql",
+        json={"query": "{ status { state filesIndexed filesSkipped filesFailed } }"},
+    ).json()["data"]["status"]
+    assert status["state"] == "watching"
+    assert status["filesIndexed"] == 2
+    detail = stack.client.post(
+        "/graphql",
+        json={"query": '{ file(path: "notes/roof.txt") { name status } }'},
+    ).json()["data"]["file"]
+    assert detail["name"] == "roof.txt"
+    assert detail["status"] == "indexed"
+    escaped = stack.client.post(
+        "/graphql",
+        json={"query": '{ file(path: "../secret.txt") { name } }'},
+    ).json()["data"]["file"]
+    assert escaped is None
+
+
+def test_content_route_stays_inside_the_library(stack) -> None:
+    ok = stack.client.get("/content", params={"path": "notes/roof.txt"})
+    assert ok.status_code == 200
+    assert b"roof leak" in ok.content
+    escaped = stack.client.get("/content", params={"path": "../data/index.sqlite"})
+    assert escaped.status_code == 404
+    absolute = stack.client.get("/content", params={"path": "/etc/passwd"})
+    assert absolute.status_code == 404
+
+
+def test_external_library_is_not_indexed(stack, monkeypatch) -> None:
+    monkeypatch.setattr("better_search.indexer.library_is_external", lambda _path: True)
+    (stack.library / "extra.txt").write_text("should stay out", encoding="utf-8")
+    stack.rescan()
+    assert stack.indexer.state == "external-drive-blocked"
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "should stay out") { hits { name } } }'},
+    )
+    names = [hit["name"] for hit in response.json()["data"]["search"]["hits"]]
+    assert "extra.txt" not in names
+    assert stack.app.state.search.db.get_file("extra.txt") is None
+
+
+def test_skipped_files_are_recorded(stack) -> None:
+    (stack.library / "movie.mp4").write_bytes(b"video")
+    (stack.library / ".DS_Store").write_bytes(b"junk")
+    (stack.library / "photos.zip").write_bytes(b"PK")
+    stack.rescan()
+    status = stack.client.post(
+        "/graphql",
+        json={"query": "{ status { filesSkipped filesIndexed } }"},
+    ).json()["data"]["status"]
+    assert status["filesSkipped"] == 3
+    assert status["filesIndexed"] == 2

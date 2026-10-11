@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.sqlite
+*.sqlite-journal
+**/node_modules/
+**/web/dist/
+.DS_Store
+.codegraph/
