@@ -1,3 +1,15 @@
+from better_search.indexer import scan_progress
+
+
+def test_scan_progress_stays_under_100_until_the_walk_finishes() -> None:
+    assert scan_progress(0, 10, "indexing") == 0
+    assert scan_progress(4, 10, "indexing") == 40
+    assert scan_progress(10, 10, "indexing") == 99
+    assert scan_progress(12, 10, "indexing") == 99
+    assert scan_progress(10, 10, "watching") == 100
+    assert scan_progress(0, 0, "indexing") is None
+
+
 def test_search_reports_similarity(stack) -> None:
     response = stack.client.post(
         "/graphql",
@@ -206,6 +218,43 @@ def test_photo_search_and_type_filter(stack) -> None:
         json={"query": '{ search(q: "red bike", fileType: DOCUMENT) { hits { name } } }'},
     ).json()["data"]["search"]["hits"]
     assert all(hit["name"] != "red-bike.png" for hit in documents)
+
+
+def test_scan_reports_library_progress(stack) -> None:
+    status = stack.client.post(
+        "/graphql",
+        json={"query": "{ status { state libraryTotal progress filesSeen } }"},
+    ).json()["data"]["status"]
+    assert status["state"] == "watching"
+    assert status["libraryTotal"] == status["filesSeen"] == 2
+    assert status["progress"] == 100
+
+
+def test_new_file_is_indexed_during_the_scan(stack) -> None:
+    path = stack.library / "midway.txt"
+    path.write_text("midway arrival on the main disk", encoding="utf-8")
+    original = stack.indexer._index_one
+    queued = False
+    order: list[str] = []
+
+    def wrapped(candidate) -> None:
+        nonlocal queued
+        if not queued:
+            stack.indexer.events.put((path, False, False))
+            queued = True
+        order.append(candidate.name)
+        original(candidate)
+
+    stack.indexer._index_one = wrapped
+    stack.indexer.full_scan()
+    assert "midway.txt" in order
+    assert order.index("midway.txt") < len(order) - 1
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "midway arrival") { hits { name } } }'},
+    )
+    names = [hit["name"] for hit in response.json()["data"]["search"]["hits"]]
+    assert "midway.txt" in names
 
 
 def test_status_and_file_query(stack) -> None:

@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.2.0"
+version: "0.2.1"
 port: 8787
 storage:
   dataRoot: data
@@ -28,9 +28,9 @@ repo: https://umbrel.com
 support: https://umbrel.com
 submission: https://umbrel.com
 releaseNotes: >-
-  Search results show a similarity score. Documents are embedded with
-  Qwen3-Embedding-0.6B and photos with Jina CLIP. A folder can be indexed
-  first without restarting the walk. The first launch rebuilds the index.
+  The status line keeps the file count while a folder is indexed first, and
+  shows how much of the library is done. New files are indexed as they appear,
+  including during a scan.
 gallery: []
 dependencies: []
 path: ""

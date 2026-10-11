@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
-const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError priorityFolder } }`;
+const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError priorityFolder libraryTotal progress } }`;
 
 const SEARCH = `query ($q: String!, $fileType: FileType!, $limit: Int!) {
   search(q: $q, fileType: $fileType, limit: $limit) {
@@ -45,17 +45,26 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function progressLabel(status) {
+  const seen = status.filesSeen.toLocaleString();
+  if (status.libraryTotal > 0 && typeof status.progress === "number") {
+    return `${seen} / ${status.libraryTotal.toLocaleString()} · ${status.progress}%`;
+  }
+  return `${seen} files`;
+}
+
 function statusCopy(status) {
   if (!status) return "Starting";
   if (status.state === "waiting-for-library") return "Waiting for the main disk";
   if (status.state === "external-drive-blocked") return "External drive blocked";
-  if (status.priorityFolder) {
-    return `Indexing ${status.priorityFolder} first`;
-  }
   if (status.state === "indexing") {
-    return `Indexing ${status.filesSeen.toLocaleString()} files`;
+    const progress = progressLabel(status);
+    if (status.priorityFolder) return `Indexing ${status.priorityFolder} first · ${progress}`;
+    return `Indexing ${progress}`;
   }
-  return `${status.filesIndexed.toLocaleString()} indexed · ${status.filesSkipped.toLocaleString()} skipped`;
+  const settled = `${status.filesIndexed.toLocaleString()} indexed · ${status.filesSkipped.toLocaleString()} skipped`;
+  if (status.state === "watching") return `${settled} · new files index automatically`;
+  return settled;
 }
 
 export function App() {
@@ -148,6 +157,21 @@ export function App() {
           />
           {statusCopy(status)}
         </p>
+        {status?.state === "indexing" && typeof status.progress === "number" ? (
+          <div
+            className="library-progress"
+            role="progressbar"
+            aria-valuenow={status.progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Library indexed"
+          >
+            <motion.span
+              animate={{ width: `${status.progress}%` }}
+              transition={reduce ? { duration: 0 } : { duration: 0.45, ease: "easeOut" }}
+            />
+          </div>
+        ) : null}
       </header>
       <p className="lede">
         Finds notes, PDFs, office files, and photos on the main disk. New files are picked up as they appear.

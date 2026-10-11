@@ -41,6 +41,8 @@ class IndexStatus:
     files_failed: int
     last_error: str | None
     priority_folder: str | None
+    library_total: int
+    progress: int | None
 
 
 @strawberry.type
@@ -113,6 +115,8 @@ class Query:
             files_failed=int(snap["files_failed"]),
             last_error=None if snap["last_error"] is None else str(snap["last_error"]),
             priority_folder=None if snap.get("priority_folder") is None else str(snap["priority_folder"]),
+            library_total=int(snap["library_total"]),
+            progress=None if snap["progress"] is None else int(snap["progress"]),
         )
 
     @strawberry.field

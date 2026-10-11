@@ -52,6 +52,17 @@ def relative_to_library(library: Path, path: Path) -> str | None:
     return relative.as_posix()
 
 
+def scan_progress(seen: int, total: int, state: str) -> int | None:
+    """Percent of the library walked. Stays under 100 until the scan finishes."""
+    if state == "watching":
+        return 100 if total > 0 else None
+    if state != "indexing" or total <= 0:
+        return None
+    if seen >= total:
+        return 99
+    return (seen * 100) // total
+
+
 class _Handler(FileSystemEventHandler):
     def __init__(self, indexer: Indexer) -> None:
         self.indexer = indexer
@@ -98,6 +109,8 @@ class Indexer:
         self._same = None
         self._priority_folder: str | None = None
         self._priority_lock = threading.Lock()
+        self.library_total = 0
+        self._visited: set[str] = set()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -121,12 +134,14 @@ class Indexer:
                 self.files_skipped,
                 self.files_failed,
             )
+            total = self.library_total
         else:
             counts = self.db.counts()
             seen = counts["seen"]
             indexed = counts["indexed"]
             skipped = counts["skipped"]
             failed = counts["failed"]
+            total = counts["seen"]
         return {
             "state": self.state,
             "files_seen": seen,
@@ -135,6 +150,8 @@ class Indexer:
             "files_failed": failed,
             "last_error": self.last_error,
             "priority_folder": self.priority_folder(),
+            "library_total": total,
+            "progress": scan_progress(seen, total, self.state),
         }
 
     def priority_folder(self) -> str | None:
@@ -175,8 +192,20 @@ class Indexer:
         self.files_skipped = 0
         self.files_failed = 0
         self.last_error = None
+        self._visited = set()
+        prior = self.db.counts()["seen"]
+        self.library_total = prior
+        if prior <= 0:
+            counted = 0
+            for _path in iter_library_files(self.library, self._same):
+                counted += 1
+                if self._stop.is_set():
+                    self.library_total = counted
+                    return
+            self.library_total = counted
         walker = iter_library_files(self.library, self._same)
         while not self._stop.is_set():
+            self.drain()
             self._drain_priority()
             if self._stop.is_set():
                 return
@@ -205,6 +234,7 @@ class Indexer:
                 for child in iter_library_files(root, self._same):
                     if self._stop.is_set():
                         return
+                    self.drain()
                     self._index_one(child)
         finally:
             with self._priority_lock:
@@ -243,6 +273,10 @@ class Indexer:
         relative = relative_to_library(self.library, path)
         if relative is None or not path.is_file():
             return
+        if relative in self._visited:
+            self.db.touch_scan(relative, self.scan_token)
+            return
+        self._visited.add(relative)
         self.files_seen += 1
         try:
             stat_result = path.stat()
