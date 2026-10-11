@@ -107,6 +107,34 @@ mark {
   font-size: 20px;
 }
 
+.priority {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.priority input {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 999px;
+  padding: 8px 14px;
+  outline: none;
+}
+
+.priority input:focus {
+  border-color: rgba(226, 163, 106, 0.7);
+}
+
+.priority button {
+  border: 1px solid var(--line);
+  background: var(--copper-dim);
+  color: var(--copper);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
 .filters {
   display: flex;
   gap: 8px;
@@ -183,7 +211,17 @@ mark {
 }
 
 .path {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
   font-size: 12px;
+}
+
+.confidence {
+  color: var(--copper);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  flex: none;
 }
 
 .bar {

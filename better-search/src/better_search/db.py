@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import sqlite3
+import struct
 import threading
 from pathlib import Path
 from typing import Any
 
 import sqlite_vec
 from sqlite_vec import serialize_float32
+
+
+def _decode_vector(value: object) -> list[float] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.startswith("["):
+            return None
+        parts = [part.strip() for part in text.strip("[]").split(",") if part.strip()]
+        return [float(part) for part in parts]
+    raw = bytes(value)  # type: ignore[arg-type]
+    if not raw or len(raw) % 4 != 0:
+        return None
+    return list(struct.unpack(f"<{len(raw) // 4}f", raw))
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -327,7 +343,7 @@ class Database:
             connection.close()
         return [int(row["rowid"]) for row in rows]
 
-    def vec_ids(self, table: str, vector: list[float], limit: int, max_distance: float = 0.75) -> list[int]:
+    def vec_ids(self, table: str, vector: list[float], limit: int, max_distance: float = 0.75) -> list[tuple[int, float]]:
         if table not in {"vec_text", "vec_image"}:
             raise ValueError(table)
         blob = serialize_float32(vector)
@@ -339,7 +355,26 @@ class Database:
             ).fetchall()
         finally:
             connection.close()
-        return [int(row["rowid"]) for row in rows if float(row["distance"]) <= max_distance]
+        hits: list[tuple[int, float]] = []
+        for row in rows:
+            distance = float(row["distance"])
+            if distance > max_distance:
+                continue
+            similarity = max(0.0, min(1.0, 1.0 - distance))
+            hits.append((int(row["rowid"]), similarity))
+        return hits
+
+    def embedding(self, table: str, rowid: int) -> list[float] | None:
+        if table not in {"vec_text", "vec_image"}:
+            raise ValueError(table)
+        connection = self.read()
+        try:
+            row = connection.execute(f"SELECT embedding FROM {table} WHERE rowid = ?", (rowid,)).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        return _decode_vector(row["embedding"])
 
     def chunk_info(self, chunk_id: int) -> sqlite3.Row | None:
         rows = self._fetch(

@@ -29,6 +29,20 @@ def _token_vector(text: str, dim: int) -> list[float]:
     return l2_normalize(vector)
 
 
+QWEN_QUERY_PREFIX = (
+    "Instruct: Given a file search query, retrieve relevant passages from personal documents and notes\nQuery:"
+)
+
+
+def qwen_query(text: str) -> str:
+    """Qwen3 retrieval queries need the instruction prefix. Passages do not."""
+    return f"{QWEN_QUERY_PREFIX}{text}"
+
+
+def _is_qwen(model_name: str) -> bool:
+    return model_name.startswith("Qwen/Qwen3-Embedding")
+
+
 class Embedder(Protocol):
     text_dim: int
     image_dim: int
@@ -135,10 +149,12 @@ class FastEmbedder:
 
     def embed_query(self, text: str) -> list[float]:
         model = self._text_model()
+        prepared = qwen_query(text) if _is_qwen(self.text_model_name) else text
         embed = getattr(model, "query_embed", None)
         if embed is not None:
-            return _as_list(next(iter(embed([text]))))
-        return _as_list(next(iter(model.embed([f"query: {text}"]))))
+            return _as_list(next(iter(embed([prepared]))))
+        prefix = "" if _is_qwen(self.text_model_name) else "query: "
+        return _as_list(next(iter(model.embed([f"{prefix}{prepared}"]))))
 
     def embed_image(self, path: Path) -> list[float]:
         model = self._image_model()

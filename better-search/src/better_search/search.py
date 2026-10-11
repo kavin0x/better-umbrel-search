@@ -20,6 +20,7 @@ class Hit:
     page: int | None
     snippet: str
     score: float
+    similarity: float | None
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,32 @@ def snippet_for(text: str, query: str, window: int = 240) -> str:
     return piece
 
 
+def _dot(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    return max(0.0, min(1.0, sum(a * b for a, b in zip(left, right, strict=True))))
+
+
+def _stored_similarity(
+    db: Database,
+    chunk_id: int,
+    text_query: list[float] | None,
+    image_query: list[float] | None,
+) -> float | None:
+    scores: list[float] = []
+    if text_query is not None:
+        stored = db.embedding("vec_text", chunk_id)
+        if stored is not None:
+            scores.append(_dot(stored, text_query))
+    if image_query is not None:
+        stored = db.embedding("vec_image", chunk_id)
+        if stored is not None:
+            scores.append(_dot(stored, image_query))
+    if not scores:
+        return None
+    return max(scores)
+
+
 def in_folder(path: str, folder: str | None) -> bool:
     if not folder:
         return True
@@ -83,12 +110,21 @@ def search(
     keyword_ids = db.fts_ids(match, pool)
     text_ids: list[int] = []
     image_ids: list[int] = []
+    similarities: dict[int, float] = {}
+    text_query: list[float] | None = None
+    image_query: list[float] | None = None
     try:
-        text_ids = db.vec_ids("vec_text", embedder.embed_query(query), pool)
+        text_query = embedder.embed_query(query)
+        for chunk_id, similarity in db.vec_ids("vec_text", text_query, pool):
+            text_ids.append(chunk_id)
+            similarities[chunk_id] = max(similarities.get(chunk_id, 0.0), similarity)
     except Exception:
         logger.exception("text vector search failed")
     try:
-        image_ids = db.vec_ids("vec_image", embedder.embed_image_query(query), pool)
+        image_query = embedder.embed_image_query(query)
+        for chunk_id, similarity in db.vec_ids("vec_image", image_query, pool):
+            image_ids.append(chunk_id)
+            similarities[chunk_id] = max(similarities.get(chunk_id, 0.0), similarity)
     except Exception:
         logger.exception("image vector search failed")
     fused = reciprocal_rank_fusion([keyword_ids, text_ids, image_ids])
@@ -106,6 +142,9 @@ def search(
             continue
         seen.add(info["path"])
         page = info["page"]
+        similarity = similarities.get(chunk_id)
+        if similarity is None:
+            similarity = _stored_similarity(db, chunk_id, text_query, image_query)
         hits.append(
             Hit(
                 path=info["path"],
@@ -114,6 +153,7 @@ def search(
                 page=None if page is None else int(page),
                 snippet=snippet_for(info["text"], query),
                 score=round(float(score), 6),
+                similarity=None if similarity is None else round(similarity, 4),
             )
         )
         if len(hits) >= limit:

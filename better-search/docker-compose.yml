@@ -7,7 +7,7 @@ services:
       APP_PORT: 8787
 
   app:
-    image: ghcr.io/kavin0x/better-umbrel-search:0.1.1
+    image: ghcr.io/kavin0x/better-umbrel-search:0.2.0
     restart: on-failure
     stop_grace_period: 1m
     init: true

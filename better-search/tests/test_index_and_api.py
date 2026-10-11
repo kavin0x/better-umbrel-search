@@ -1,3 +1,126 @@
+def test_search_reports_similarity(stack) -> None:
+    response = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "roof leak") { hits { path similarity } } }'},
+    )
+    body = response.json()
+    assert response.status_code == 200, body
+    assert "errors" not in body
+    hit = body["data"]["search"]["hits"][0]
+    assert hit["path"] == "notes/roof.txt"
+    assert hit["similarity"] > 0
+    assert hit["similarity"] <= 1
+    db = stack.app.state.search.db
+    chunk_id = int(db._fetch("SELECT id FROM chunks LIMIT 1")[0]["id"])
+    vector = db.embedding("vec_text", chunk_id)
+    assert vector is not None
+    assert len(vector) == stack.embedder.text_dim
+
+
+def test_priority_folder_is_indexed_before_the_rest(stack, monkeypatch) -> None:
+    from better_search.indexer import iter_library_files
+
+    late = stack.library / "aaa"
+    soon = stack.library / "zzz"
+    late.mkdir()
+    soon.mkdir()
+    (late / "late.txt").write_text("late quartz note", encoding="utf-8")
+    (soon / "soon.txt").write_text("soon quartz note", encoding="utf-8")
+
+    def ordered(root, same):
+        if root.resolve() == stack.library.resolve():
+            yield from iter_library_files(late, same)
+            yield from iter_library_files(soon, same)
+            return
+        yield from iter_library_files(root, same)
+
+    monkeypatch.setattr("better_search.indexer.iter_library_files", ordered)
+    order: list[str] = []
+    tokens: list[str] = []
+    original = stack.indexer._index_one
+
+    def wrapped(path) -> None:
+        tokens.append(stack.indexer.scan_token)
+        order.append(path.name)
+        original(path)
+
+    stack.indexer.prioritize("zzz")
+    stack.indexer._index_one = wrapped
+    stack.indexer.full_scan()
+    assert order.index("soon.txt") < order.index("late.txt")
+    assert tokens[0]
+    assert len(set(tokens)) == 1
+
+
+def test_priority_during_scan_does_not_reset(stack, monkeypatch) -> None:
+    from better_search.indexer import iter_library_files
+
+    late = stack.library / "aaa"
+    soon = stack.library / "zzz"
+    late.mkdir()
+    soon.mkdir()
+    (late / "late.txt").write_text("late quartz note", encoding="utf-8")
+    (soon / "soon.txt").write_text("soon quartz note", encoding="utf-8")
+
+    def ordered(root, same):
+        if root.resolve() == stack.library.resolve():
+            yield from iter_library_files(late, same)
+            yield from iter_library_files(soon, same)
+            return
+        yield from iter_library_files(root, same)
+
+    monkeypatch.setattr("better_search.indexer.iter_library_files", ordered)
+    order: list[str] = []
+    tokens: list[str] = []
+    seen_counts: list[int] = []
+    original = stack.indexer._index_one
+
+    def wrapped(path) -> None:
+        if not tokens:
+            stack.indexer.prioritize("zzz")
+        tokens.append(stack.indexer.scan_token)
+        seen_counts.append(stack.indexer.files_seen)
+        order.append(path.name)
+        original(path)
+
+    stack.indexer._index_one = wrapped
+    stack.indexer.full_scan()
+    assert order[0] == "late.txt"
+    assert order[1] == "soon.txt"
+    assert seen_counts[1] >= 1
+    assert len(set(tokens)) == 1
+
+
+def test_prioritize_folder_mutation(stack) -> None:
+    accepted = stack.client.post(
+        "/graphql",
+        json={
+            "query": "mutation ($path: String!) { prioritizeFolder(path: $path) }",
+            "variables": {"path": "notes"},
+        },
+    ).json()
+    assert accepted["data"]["prioritizeFolder"] == "notes"
+    status = stack.client.post(
+        "/graphql",
+        json={"query": "{ status { priorityFolder } }"},
+    ).json()["data"]["status"]
+    assert status["priorityFolder"] == "notes"
+    escaped = stack.client.post(
+        "/graphql",
+        json={
+            "query": "mutation ($path: String!) { prioritizeFolder(path: $path) }",
+            "variables": {"path": "../secret"},
+        },
+    ).json()
+    assert escaped["errors"]
+    stack.rescan()
+    cleared = stack.client.post(
+        "/graphql",
+        json={"query": "{ status { priorityFolder } }"},
+    ).json()["data"]["status"]
+    assert cleared["priorityFolder"] is None
+
+
 def test_indexes_existing_files_and_skips_junk(stack) -> None:
     counts = stack.indexer.snapshot()
     assert counts["files_indexed"] == 2

@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
-const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError } }`;
+const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError priorityFolder } }`;
 
 const SEARCH = `query ($q: String!, $fileType: FileType!, $limit: Int!) {
   search(q: $q, fileType: $fileType, limit: $limit) {
     tookMs
-    hits { path name fileType page snippet score }
+    hits { path name fileType page snippet score similarity }
   }
 }`;
+
+const PRIORITIZE = `mutation ($path: String!) { prioritizeFolder(path: $path) }`;
 
 const FILTERS = [
   { id: "ALL", label: "All" },
@@ -47,6 +49,9 @@ function statusCopy(status) {
   if (!status) return "Starting";
   if (status.state === "waiting-for-library") return "Waiting for the main disk";
   if (status.state === "external-drive-blocked") return "External drive blocked";
+  if (status.priorityFolder) {
+    return `Indexing ${status.priorityFolder} first`;
+  }
   if (status.state === "indexing") {
     return `Indexing ${status.filesSeen.toLocaleString()} files`;
   }
@@ -56,6 +61,7 @@ function statusCopy(status) {
 export function App() {
   const reduce = useReducedMotion();
   const [query, setQuery] = useState("");
+  const [folder, setFolder] = useState("");
   const [fileType, setFileType] = useState("ALL");
   const [status, setStatus] = useState(null);
   const [result, setResult] = useState(null);
@@ -102,8 +108,22 @@ export function App() {
     };
   }, [query, fileType]);
 
-  const topScore = result?.hits?.[0]?.score || 1;
-  const busy = status?.state === "indexing" || status?.state === "waiting-for-library";
+  const busy = status?.state === "indexing" || status?.state === "waiting-for-library" || Boolean(status?.priorityFolder);
+
+  async function submitPriority(event) {
+    event.preventDefault();
+    const path = folder.trim();
+    if (!path) return;
+    try {
+      await gql(PRIORITIZE, { path });
+      setFolder("");
+      setError("");
+      const data = await gql(STATUS);
+      setStatus(data.status);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
   const motionProps = useMemo(
     () =>
       reduce
@@ -144,6 +164,15 @@ export function App() {
           autoFocus
         />
       </label>
+      <motion.form className="priority" onSubmit={submitPriority} {...motionProps}>
+        <input
+          aria-label="Folder to index first"
+          placeholder="Index this folder first"
+          value={folder}
+          onChange={(event) => setFolder(event.target.value)}
+        />
+        <button type="submit">First</button>
+      </motion.form>
       <div className="filters" role="tablist">
         {FILTERS.map((filter) => (
           <button
@@ -183,12 +212,19 @@ export function App() {
               <div>
                 <h2>{hit.name}</h2>
                 <p className="path">
-                  {hit.path}
-                  {hit.page ? ` · page ${hit.page}` : ""}
+                  {typeof hit.similarity === "number" ? (
+                    <span className="confidence" title="Similarity">
+                      {Math.round(hit.similarity * 100)}%
+                    </span>
+                  ) : null}
+                  <span>
+                    {hit.path}
+                    {hit.page ? ` · page ${hit.page}` : ""}
+                  </span>
                 </p>
                 <p className="snippet">{highlight(hit.snippet, query)}</p>
                 <div className="bar" aria-hidden="true">
-                  <span style={{ width: `${Math.max(8, (hit.score / topScore) * 100)}%` }} />
+                  <span style={{ width: `${Math.round((hit.similarity ?? 0) * 100)}%` }} />
                 </div>
               </div>
             </motion.a>

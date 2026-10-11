@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.1.2"
+version: "0.2.0"
 port: 8787
 storage:
   dataRoot: data
@@ -28,7 +28,9 @@ repo: https://umbrel.com
 support: https://umbrel.com
 submission: https://umbrel.com
 releaseNotes: >-
-  The index can be created on the app data volume.
+  Search results show a similarity score. Documents are embedded with
+  Qwen3-Embedding-0.6B and photos with Jina CLIP. A folder can be indexed
+  first without restarting the walk. The first launch rebuilds the index.
 gallery: []
 dependencies: []
 path: ""

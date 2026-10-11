@@ -23,6 +23,7 @@ class SearchHit:
     page: int | None
     snippet: str
     score: float
+    similarity: float | None
 
 
 @strawberry.type
@@ -39,6 +40,7 @@ class IndexStatus:
     files_skipped: int
     files_failed: int
     last_error: str | None
+    priority_folder: str | None
 
 
 @strawberry.type
@@ -93,6 +95,7 @@ class Query:
                     page=hit.page,
                     snippet=hit.snippet,
                     score=hit.score,
+                    similarity=hit.similarity,
                 )
                 for hit in found.hits
             ],
@@ -109,6 +112,7 @@ class Query:
             files_skipped=int(snap["files_skipped"]),
             files_failed=int(snap["files_failed"]),
             last_error=None if snap["last_error"] is None else str(snap["last_error"]),
+            priority_folder=None if snap.get("priority_folder") is None else str(snap["priority_folder"]),
         )
 
     @strawberry.field
@@ -135,4 +139,14 @@ def _escape(path: str) -> bool:
     return path.startswith("/") or path.startswith("\\") or ".." in path.split("/") or "\x00" in path
 
 
-schema = strawberry.Schema(query=Query)
+@strawberry.type
+class Mutation:
+    @strawberry.mutation
+    def prioritize_folder(self, info: Info, path: str) -> str:
+        try:
+            return _app(info).indexer.prioritize(path)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+schema = strawberry.Schema(query=Query, mutation=Mutation)

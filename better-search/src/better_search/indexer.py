@@ -96,6 +96,8 @@ class Indexer:
         self._thread: threading.Thread | None = None
         self._observer: Observer | None = None
         self._same = None
+        self._priority_folder: str | None = None
+        self._priority_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -132,7 +134,30 @@ class Indexer:
             "files_skipped": skipped,
             "files_failed": failed,
             "last_error": self.last_error,
+            "priority_folder": self.priority_folder(),
         }
+
+    def priority_folder(self) -> str | None:
+        with self._priority_lock:
+            return self._priority_folder
+
+    def prioritize(self, folder: str) -> str:
+        cleaned = _priority_folder(folder)
+        root = (self.library / cleaned).resolve()
+        try:
+            root.relative_to(self.library.resolve())
+        except ValueError as exc:
+            raise ValueError("folder must stay inside the library") from exc
+        if not root.is_dir():
+            raise ValueError("folder was not found in the library")
+        same = self._same
+        if same is None and self.library.exists():
+            same = device_predicate(self.library) if self.settings.stay_on_main_device else _always_same
+        if same is not None and not same(root):
+            raise ValueError("folder is on another disk")
+        with self._priority_lock:
+            self._priority_folder = cleaned
+        return cleaned
 
     def full_scan(self) -> None:
         if not self.library.exists():
@@ -150,9 +175,15 @@ class Indexer:
         self.files_skipped = 0
         self.files_failed = 0
         self.last_error = None
-        for path in iter_library_files(self.library, self._same):
+        walker = iter_library_files(self.library, self._same)
+        while not self._stop.is_set():
+            self._drain_priority()
             if self._stop.is_set():
                 return
+            try:
+                path = next(walker)
+            except StopIteration:
+                break
             self._index_one(path)
         self.drain()
         removed = self.db.delete_stale(self.scan_token)
@@ -160,6 +191,25 @@ class Indexer:
             logger.info("removed %s files that left the main disk", removed)
         if self.state == "indexing":
             self.state = "watching"
+
+    def _drain_priority(self) -> None:
+        if self._same is None:
+            return
+        with self._priority_lock:
+            folder = self._priority_folder
+        if not folder:
+            return
+        root = self.library / folder
+        try:
+            if root.is_dir() and self._same(root):
+                for child in iter_library_files(root, self._same):
+                    if self._stop.is_set():
+                        return
+                    self._index_one(child)
+        finally:
+            with self._priority_lock:
+                if self._priority_folder == folder:
+                    self._priority_folder = None
 
     def drain(self) -> None:
         while True:
@@ -331,6 +381,7 @@ class Indexer:
             while not self._stop.is_set() and time.monotonic() < deadline:
                 self.state = "watching"
                 self.drain()
+                self._drain_priority()
                 self._stop.wait(0.5)
 
     def _ensure_watcher(self) -> None:
@@ -353,6 +404,16 @@ class Indexer:
         self._observer.stop()
         self._observer.join(timeout=3)
         self._observer = None
+
+
+def _priority_folder(folder: str) -> str:
+    cleaned = folder.strip().strip("/")
+    if not cleaned or "\x00" in cleaned:
+        raise ValueError("folder must stay inside the library")
+    parts = cleaned.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("folder must stay inside the library")
+    return cleaned
 
 
 def _always_same(_path: Path) -> bool:
