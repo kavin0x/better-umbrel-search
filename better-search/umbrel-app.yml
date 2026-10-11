@@ -4,8 +4,18 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.1.0"
+version: "0.1.1"
 port: 8787
+storage:
+  dataRoot: data
+folderAccess:
+  - id: library
+    name: Home
+    note: Internal Home folder, mounted read-only at /library. External disks are not indexed.
+    mounts:
+      - service: app
+        targetPath: /library
+        readOnly: true
 description: >-
   Search documents and photos on the main disk. The first run indexes what is
   already there, and new files are picked up as they appear. USB drives and
@@ -18,8 +28,8 @@ repo: https://umbrel.com
 support: https://umbrel.com
 submission: https://umbrel.com
 releaseNotes: >-
-  Initial release. Hybrid keyword and semantic search for documents and photos
-  on the main disk.
+  Installs from a published image and asks for the internal Home folder.
+gallery: []
 dependencies: []
 path: ""
 defaultUsername: ""
