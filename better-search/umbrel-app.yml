@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.1.1"
+version: "0.1.2"
 port: 8787
 storage:
   dataRoot: data
@@ -28,7 +28,7 @@ repo: https://umbrel.com
 support: https://umbrel.com
 submission: https://umbrel.com
 releaseNotes: >-
-  Installs from a published image and asks for the internal Home folder.
+  The index can be created on the app data volume.
 gallery: []
 dependencies: []
 path: ""

@@ -31,7 +31,3 @@ jobs:
           tags: ghcr.io/kavin0x/better-umbrel-search:0.1.1
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Make the package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PUT /user/packages/container/better-umbrel-search/visibility -f visibility=public
