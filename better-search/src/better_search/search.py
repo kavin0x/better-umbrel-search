@@ -65,9 +65,10 @@ _STOPWORDS = frozenset(
     }
 )
 
-# Image-only neighbors below this cosine are CLIP guesses (a person for
-# "grandmas"), not a photo the query actually describes.
-IMAGE_ONLY_FLOOR = 0.32
+# Vector-only neighbors below these cosines are loose guesses: a person for
+# "grandmas", or a random note for a name that is not in the file.
+IMAGE_ONLY_FLOOR = 0.42
+TEXT_ONLY_FLOOR = 0.45
 
 
 def query_tokens(query: str) -> list[str]:
@@ -178,17 +179,20 @@ def search(
     image_query: list[float] | None = None
     try:
         text_query = embedder.embed_query(query)
-        for chunk_id, similarity in db.vec_ids("vec_text", text_query, pool):
+        for chunk_id, similarity in db.vec_ids(
+            "vec_text", text_query, pool, max_distance=1.0 - TEXT_ONLY_FLOOR
+        ):
+            if chunk_id not in keyword_set and similarity < TEXT_ONLY_FLOOR:
+                continue
             text_ids.append(chunk_id)
             similarities[chunk_id] = max(similarities.get(chunk_id, 0.0), similarity)
     except Exception:
         logger.exception("text vector search failed")
     try:
         image_query = embedder.embed_image_query(query)
-        # A filename hit already answers the query. Keep only confident photo
-        # matches so a loose CLIP neighbor cannot sit above that file.
-        image_distance = 1.0 - IMAGE_ONLY_FLOOR if keyword_ids else 0.75
-        for chunk_id, similarity in db.vec_ids("vec_image", image_query, pool, max_distance=image_distance):
+        for chunk_id, similarity in db.vec_ids(
+            "vec_image", image_query, pool, max_distance=1.0 - IMAGE_ONLY_FLOOR
+        ):
             if chunk_id not in keyword_set and similarity < IMAGE_ONLY_FLOOR:
                 continue
             image_ids.append(chunk_id)

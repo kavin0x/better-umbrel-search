@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.3.1"
+version: "0.3.2"
 port: 8787
 storage:
   dataRoot: data
@@ -30,7 +30,8 @@ submission: https://umbrel.com
 releaseNotes: >-
   A search for a name or a filename stays on that file. "grandmas" matches
   grandma photos by name, and "paper by Anup Shah" ranks that document above
-  an unrelated resume. PDF title and author metadata are indexed too.
+  an unrelated resume. Loose photo guesses are left out. PDF title and author
+  metadata are indexed too.
 gallery: []
 dependencies: []
 path: ""

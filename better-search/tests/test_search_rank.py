@@ -1,6 +1,22 @@
 from PIL import Image
 
 
+def test_unlabeled_photo_is_not_a_guess_for_a_name(stack) -> None:
+    Image.new("RGB", (8, 8), (200, 180, 160)).save(stack.library / "baby.jpg")
+    (stack.library / "notes" / "grades.htm").write_text(
+        "final grades were posted on tuesday",
+        encoding="utf-8",
+    )
+    stack.rescan()
+    hits = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "grandmas") { hits { name } } }'},
+    ).json()["data"]["search"]["hits"]
+    names = [hit["name"] for hit in hits]
+    assert "baby.jpg" not in names
+    assert "grades.htm" not in names
+
+
 def test_plural_query_finds_the_named_photo_first(stack) -> None:
     Image.new("RGB", (8, 8), (20, 20, 20)).save(stack.library / "grandma.jpg")
     Image.new("RGB", (8, 8), (200, 180, 160)).save(stack.library / "baby.jpg")
