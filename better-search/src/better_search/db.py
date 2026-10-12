@@ -9,6 +9,10 @@ from typing import Any
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
+# Bump when extracted document text changes. Indexed PDFs are re-read so
+# title and author metadata become searchable. Photos stay as they are.
+EXTRACT_REVISION = "2"
+
 
 def _decode_vector(value: object) -> list[float] | None:
     if value is None:
@@ -108,6 +112,15 @@ class Database:
         )
         self._set_meta("text_dim", str(self.text_dim))
         self._set_meta("image_dim", str(self.image_dim))
+        if self._meta("extract_revision") != EXTRACT_REVISION:
+            connection.execute(
+                """
+                UPDATE files SET content_hash = NULL
+                WHERE status = 'indexed'
+                  AND (lower(name) LIKE '%.pdf' OR mime = 'application/pdf')
+                """
+            )
+            self._set_meta("extract_revision", EXTRACT_REVISION)
         connection.commit()
 
     def _meta(self, key: str) -> str | None:
@@ -333,6 +346,7 @@ class Database:
                     """
                     SELECT rowid FROM chunks_fts
                     WHERE chunks_fts MATCH ?
+                    ORDER BY bm25(chunks_fts, 1.0, 12.0, 6.0)
                     LIMIT ?
                     """,
                     (match, limit),

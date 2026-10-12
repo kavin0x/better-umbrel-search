@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.3.0"
+version: "0.3.1"
 port: 8787
 storage:
   dataRoot: data
@@ -28,9 +28,9 @@ repo: https://umbrel.com
 support: https://umbrel.com
 submission: https://umbrel.com
 releaseNotes: >-
-  Stop pauses indexing until you resume, and the status line names the file
-  currently being indexed. Caches, developer folders, app bundles, audio, and
-  other home-folder noise are skipped.
+  A search for a name or a filename stays on that file. "grandmas" matches
+  grandma photos by name, and "paper by Anup Shah" ranks that document above
+  an unrelated resume. PDF title and author metadata are indexed too.
 gallery: []
 dependencies: []
 path: ""

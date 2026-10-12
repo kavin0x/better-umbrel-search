@@ -28,6 +28,6 @@ jobs:
           file: better-search/Dockerfile
           push: true
           platforms: linux/amd64
-          tags: ghcr.io/kavin0x/better-umbrel-search:0.3.0
+          tags: ghcr.io/kavin0x/better-umbrel-search:0.3.1
           cache-from: type=gha
           cache-to: type=gha,mode=max

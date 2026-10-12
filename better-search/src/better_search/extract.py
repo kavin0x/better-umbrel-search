@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import zipfile
 from dataclasses import dataclass
@@ -73,10 +74,25 @@ def _xml_text(payload: bytes) -> str:
     return " ".join(part.strip() for part in root.itertext() if part and part.strip())
 
 
+def pdf_metadata_text(reader) -> str:
+    info = getattr(reader, "metadata", None)
+    if info is None:
+        return ""
+    parts: list[str] = []
+    for value in (info.title, info.author, info.subject, getattr(info, "keywords", None)):
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
 def extract_pdf(path: Path, ocr_page) -> list[Piece]:
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
+    meta = pdf_metadata_text(reader)
     pieces: list[Piece] = []
     for index, page in enumerate(reader.pages):
         text = page.extract_text() or ""
@@ -88,14 +104,29 @@ def extract_pdf(path: Path, ocr_page) -> list[Piece]:
                 ocr_text = ""
             if ocr_text.strip():
                 text = ocr_text
+        if index == 0 and meta:
+            text = f"{meta}\n{text}".strip()
         pieces.append(Piece(text, index + 1))
+    if not pieces and meta:
+        return [Piece(meta, 1)]
     return pieces
+
+
+def limit_tesseract_threads() -> None:
+    """Each Tesseract process uses one CPU thread.
+
+    The indexer runs several OCR jobs at once, so this stays set for the
+    process. ONNX sessions get their own thread count and do not read it.
+    Restoring the old value would race with those other OCR threads.
+    """
+    os.environ["OMP_NUM_THREADS"] = "1"
 
 
 def default_ocr_page(path: Path, page_index: int) -> str:
     import pypdfium2 as pdfium
     import pytesseract
 
+    limit_tesseract_threads()
     document = pdfium.PdfDocument(str(path))
     try:
         page = document[page_index]
@@ -196,6 +227,7 @@ def extract_image(path: Path, *, ocr_enabled: bool, ocr_fn) -> ImageInfo:
 def default_ocr_image(image: Image.Image) -> str:
     import pytesseract
 
+    limit_tesseract_threads()
     return pytesseract.image_to_string(image) or ""
 
 

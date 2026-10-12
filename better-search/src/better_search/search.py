@@ -29,11 +29,73 @@ class SearchResponse:
     took_ms: int
 
 
+# Quoted FTS tokens skip the Porter stemmer, so "grandmas" never hit a file
+# named grandma.jpg. These words are dropped so a sentence still matches the
+# names inside it: "research paper made by anup shah" keeps anup and shah.
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "made",
+        "me",
+        "my",
+        "not",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "who",
+        "whom",
+        "with",
+    }
+)
+
+# Image-only neighbors below this cosine are CLIP guesses (a person for
+# "grandmas"), not a photo the query actually describes.
+IMAGE_ONLY_FLOOR = 0.32
+
+
+def query_tokens(query: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[\w]+", query, flags=re.UNICODE):
+        folded = token.casefold()
+        if folded in _STOPWORDS or folded in seen:
+            continue
+        seen.add(folded)
+        tokens.append(folded)
+    if tokens:
+        return tokens
+    for token in re.findall(r"[\w]+", query, flags=re.UNICODE):
+        folded = token.casefold()
+        if folded not in seen:
+            seen.add(folded)
+            tokens.append(folded)
+    return tokens
+
+
 def fts_match(query: str) -> str | None:
-    tokens = re.findall(r"[\w]+", query, flags=re.UNICODE)
+    tokens = query_tokens(query)
     if not tokens:
         return None
-    return " AND ".join(f'"{token}"' for token in tokens)
+    # Unquoted so the Porter tokenizer stems both sides. OR so one missing
+    # filler word cannot hide a file that contains the real names.
+    return " OR ".join(tokens)
 
 
 def snippet_for(text: str, query: str, window: int = 240) -> str:
@@ -108,6 +170,7 @@ def search(
         return SearchResponse([], int((time.perf_counter() - started) * 1000))
     pool = min(max(limit * 8, 40), 100)
     keyword_ids = db.fts_ids(match, pool)
+    keyword_set = set(keyword_ids)
     text_ids: list[int] = []
     image_ids: list[int] = []
     similarities: dict[int, float] = {}
@@ -122,12 +185,26 @@ def search(
         logger.exception("text vector search failed")
     try:
         image_query = embedder.embed_image_query(query)
-        for chunk_id, similarity in db.vec_ids("vec_image", image_query, pool):
+        # A filename hit already answers the query. Keep only confident photo
+        # matches so a loose CLIP neighbor cannot sit above that file.
+        image_distance = 1.0 - IMAGE_ONLY_FLOOR if keyword_ids else 0.75
+        for chunk_id, similarity in db.vec_ids("vec_image", image_query, pool, max_distance=image_distance):
+            if chunk_id not in keyword_set and similarity < IMAGE_ONLY_FLOOR:
+                continue
             image_ids.append(chunk_id)
             similarities[chunk_id] = max(similarities.get(chunk_id, 0.0), similarity)
     except Exception:
         logger.exception("image vector search failed")
-    fused = reciprocal_rank_fusion([keyword_ids, text_ids, image_ids])
+    # Keyword order is bm25, with the file name weighted above body text.
+    # Those hits stay ahead of vector-only neighbors.
+    keyword_ranked = [(chunk_id, 1.0 + 1.0 / (60 + rank)) for rank, chunk_id in enumerate(keyword_ids, start=1)]
+    fused_rest = reciprocal_rank_fusion(
+        [
+            [chunk_id for chunk_id in text_ids if chunk_id not in keyword_set],
+            [chunk_id for chunk_id in image_ids if chunk_id not in keyword_set],
+        ]
+    )
+    fused = keyword_ranked + fused_rest
     hits: list[Hit] = []
     seen: set[str] = set()
     for chunk_id, score in fused:

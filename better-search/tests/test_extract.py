@@ -45,6 +45,18 @@ def test_pack_text_overlaps() -> None:
     assert chunks[0] != chunks[1]
 
 
+def test_pdf_author_metadata_is_searchable_text(tmp_path: Path) -> None:
+    path = tmp_path / "tracking.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/Author": "Anup Shah", "/Title": "Object Tracking"})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    pieces = extract_pdf(path, lambda _path, _index: "")
+    assert "Anup Shah" in pieces[0].text
+    assert "Object Tracking" in pieces[0].text
+
+
 def test_pdf_docx_and_pptx(tmp_path: Path) -> None:
     pdf = tmp_path / "invoice.pdf"
     write_text_pdf(pdf, "roof leak invoice")
