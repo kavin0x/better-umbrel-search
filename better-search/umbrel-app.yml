@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "0.3.2"
+version: "3.3"
 port: 8787
 storage:
   dataRoot: data
