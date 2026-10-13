@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def half_threads(cpu_count: int | None = None) -> int:
+    """How many CPUs indexing may use: half the logical processors, at least one."""
+    count = os.cpu_count() if cpu_count is None else cpu_count
+    return max(1, (count or 2) // 2)
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,7 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8787
     web_dist: Path | None = None
+    index_threads: int = field(default_factory=half_threads)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -36,4 +43,5 @@ class Settings:
             host=os.environ.get("HOST", "0.0.0.0"),
             port=int(os.environ.get("PORT", "8787")),
             web_dist=Path(web) if web else None,
+            index_threads=half_threads(),
         )

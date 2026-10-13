@@ -96,12 +96,24 @@ def _catalog_dim(models: list[dict], name: str) -> int:
 
 
 class FastEmbedder:
-    """CPU ONNX embeddings. Models download into the app data directory once."""
+    """CPU ONNX embeddings. Models download into the app data directory once.
 
-    def __init__(self, cache_dir: Path, text_model: str, image_model: str, clip_text_model: str) -> None:
+    ``threads`` is the ONNX intra-op pool for this one shared session. Indexing
+    keeps a single copy of each model and sizes that pool to half the CPUs.
+    """
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        text_model: str,
+        image_model: str,
+        clip_text_model: str,
+        threads: int | None = None,
+    ) -> None:
         from fastembed import ImageEmbedding, TextEmbedding
 
         self.cache_dir = cache_dir
+        self.threads = threads
         self.text_model_name = text_model
         self.image_model_name = image_model
         self.clip_text_model_name = clip_text_model
@@ -122,21 +134,33 @@ class FastEmbedder:
         if self._text is None:
             from fastembed import TextEmbedding
 
-            self._text = TextEmbedding(model_name=self.text_model_name, cache_dir=self._cache())
+            self._text = TextEmbedding(
+                model_name=self.text_model_name,
+                cache_dir=self._cache(),
+                threads=self.threads,
+            )
         return self._text
 
     def _clip_model(self):
         if self._clip_text is None:
             from fastembed import TextEmbedding
 
-            self._clip_text = TextEmbedding(model_name=self.clip_text_model_name, cache_dir=self._cache())
+            self._clip_text = TextEmbedding(
+                model_name=self.clip_text_model_name,
+                cache_dir=self._cache(),
+                threads=self.threads,
+            )
         return self._clip_text
 
     def _image_model(self):
         if self._image is None:
             from fastembed import ImageEmbedding
 
-            self._image = ImageEmbedding(model_name=self.image_model_name, cache_dir=self._cache())
+            self._image = ImageEmbedding(
+                model_name=self.image_model_name,
+                cache_dir=self._cache(),
+                threads=self.threads,
+            )
         return self._image
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:

@@ -54,6 +54,7 @@ def create_app(
             settings.text_model,
             settings.image_model,
             settings.clip_text_model,
+            threads=settings.index_threads,
         )
     db = Database(settings.data_path / "index.sqlite", embedder.text_dim, embedder.image_dim)
     indexer = Indexer(settings, db, embedder)

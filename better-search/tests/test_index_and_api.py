@@ -1,6 +1,12 @@
+import threading
 import time
+from dataclasses import replace
 
 from better_search.indexer import relative_to_library, scan_progress
+
+
+def use_one_index_thread(indexer) -> None:
+    indexer.settings = replace(indexer.settings, index_threads=1)
 
 
 def test_scan_progress_stays_under_100_until_the_walk_finishes() -> None:
@@ -51,6 +57,7 @@ def test_priority_folder_is_indexed_before_the_rest(stack, monkeypatch) -> None:
     monkeypatch.setattr("better_search.indexer.iter_library_files", ordered)
     order: list[str] = []
     tokens: list[str] = []
+    use_one_index_thread(stack.indexer)
     original = stack.indexer._index_one
 
     def wrapped(path) -> None:
@@ -87,6 +94,7 @@ def test_priority_during_scan_does_not_reset(stack, monkeypatch) -> None:
     order: list[str] = []
     tokens: list[str] = []
     seen_counts: list[int] = []
+    use_one_index_thread(stack.indexer)
     original = stack.indexer._index_one
 
     def wrapped(path) -> None:
@@ -233,6 +241,7 @@ def test_scan_reports_library_progress(stack) -> None:
 
 
 def test_new_file_is_indexed_during_the_scan(stack) -> None:
+    use_one_index_thread(stack.indexer)
     path = stack.library / "midway.txt"
     path.write_text("midway arrival on the main disk", encoding="utf-8")
     original = stack.indexer._index_one
@@ -311,6 +320,7 @@ def test_external_library_is_not_indexed(stack, monkeypatch) -> None:
 
 
 def test_stop_names_the_current_file_and_leaves_the_rest(stack) -> None:
+    use_one_index_thread(stack.indexer)
     (stack.library / "held-back.txt").write_text("held back from the scan", encoding="utf-8")
     (stack.library / "also-held.txt").write_text("also held back", encoding="utf-8")
     calls: list[str] = []
@@ -396,3 +406,37 @@ def test_skipped_files_are_recorded(stack) -> None:
     ).json()["data"]["status"]
     assert status["filesSkipped"] == 3
     assert status["filesIndexed"] == 2
+
+
+def test_window_extracts_files_together_then_indexes_them(stack, monkeypatch) -> None:
+    one = stack.library / "one.txt"
+    two = stack.library / "two.txt"
+    one.write_text("alpha quartz note", encoding="utf-8")
+    two.write_text("beta quartz note", encoding="utf-8")
+    stack.indexer._shutdown_pool()
+    stack.indexer.settings = replace(stack.indexer.settings, index_threads=2)
+    import better_search.indexer as indexer_module
+
+    original = indexer_module.extract_document
+    original_embed = stack.indexer.embedder.embed_passages
+    gate = threading.Barrier(2)
+    embedded_after = {"ready": False}
+
+    def wrapped(path, decision, ocr_page=None):
+        gate.wait(timeout=2)
+        if ocr_page is None:
+            return original(path, decision)
+        return original(path, decision, ocr_page)
+
+    def embed_passages(texts: list[str]) -> list[list[float]]:
+        assert gate.n_waiting == 0
+        embedded_after["ready"] = True
+        return original_embed(texts)
+
+    monkeypatch.setattr(indexer_module, "extract_document", wrapped)
+    monkeypatch.setattr(stack.indexer.embedder, "embed_passages", embed_passages)
+    stack.indexer._index_window([one, two])
+    assert embedded_after["ready"]
+    db = stack.app.state.search.db
+    assert db.get_file("one.txt")["status"] == "indexed"
+    assert db.get_file("two.txt")["status"] == "indexed"
