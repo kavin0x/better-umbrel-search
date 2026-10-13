@@ -22,5 +22,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     WEB_DIST=/app/web/dist \
     STAY_ON_MAIN_DEVICE=1 \
     PYTHONUNBUFFERED=1
+RUN useradd --system --uid 1000 --no-create-home app \
+    && mkdir -p /data && chown app /data
+USER 1000:1000
 EXPOSE 8787
 CMD ["uvicorn", "better_search.main:app", "--host", "0.0.0.0", "--port", "8787"]

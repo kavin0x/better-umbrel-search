@@ -10,11 +10,22 @@ def safe_library_file(library: Path, raw: str) -> Path | None:
         library_root = library.resolve()
     except OSError:
         return None
-    candidate = (library_root / raw).resolve(strict=False)
+    unresolved = library_root / raw
+    probe = unresolved
+    while probe != library_root and probe != probe.parent:
+        if probe.is_symlink():
+            return None
+        probe = probe.parent
+    candidate = unresolved.resolve(strict=False)
     try:
         candidate.relative_to(library_root)
     except ValueError:
         return None
     if not candidate.is_file():
+        return None
+    try:
+        if candidate.stat().st_dev != library_root.stat().st_dev:
+            return None
+    except OSError:
         return None
     return candidate

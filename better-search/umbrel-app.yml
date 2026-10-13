@@ -22,10 +22,10 @@ description: >-
   other external disks are not indexed, even when they are mounted inside the
   library folder. In the app settings, add your Home folder on internal storage
   to the app service at /library, read-only.
-developer: Better Search
-website: https://umbrel.com
-repo: https://umbrel.com
-support: https://umbrel.com
+developer: kavin0x
+website: https://github.com/kavin0x/better-umbrel-search
+repo: https://github.com/kavin0x/better-umbrel-search
+support: https://github.com/kavin0x/better-umbrel-search/issues
 submission: https://umbrel.com
 releaseNotes: >-
   A search for a name or a filename stays on that file. "grandmas" matches

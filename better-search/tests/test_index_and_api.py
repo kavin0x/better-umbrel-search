@@ -289,6 +289,13 @@ def test_content_route_stays_inside_the_library(stack) -> None:
     assert absolute.status_code == 404
 
 
+def test_content_route_refuses_unindexed_and_symlinked_files(stack) -> None:
+    (stack.library / "fresh.txt").write_text("not indexed yet", encoding="utf-8")
+    assert stack.client.get("/content", params={"path": "fresh.txt"}).status_code == 404
+    (stack.library / "link.txt").symlink_to(stack.library / "notes" / "roof.txt")
+    assert stack.client.get("/content", params={"path": "link.txt"}).status_code == 404
+
+
 def test_external_library_is_not_indexed(stack, monkeypatch) -> None:
     monkeypatch.setattr("better_search.indexer.library_is_external", lambda _path: True)
     (stack.library / "extra.txt").write_text("should stay out", encoding="utf-8")

@@ -1,33 +1,55 @@
 name: image
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - better-search/**
-      - .github/workflows/image.yml
+  workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: better-search
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmagic1 tesseract-ocr
+      - run: uv sync --frozen
+      - run: uv run pytest
+
+  publish:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: version
+        run: echo "version=$(sed -n 's/^version: *"\(.*\)"/\1/p' better-search/umbrel-app.yml)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: better-search
           file: better-search/Dockerfile
           push: true
-          platforms: linux/amd64
-          tags: ghcr.io/kavin0x/better-umbrel-search:0.3.2
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/kavin0x/better-umbrel-search:${{ steps.version.outputs.version }}
+            ghcr.io/kavin0x/better-umbrel-search:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Digest for docker-compose.yml
+        run: |
+          echo "Pin in docker-compose.yml:" >> "$GITHUB_STEP_SUMMARY"
+          echo "ghcr.io/kavin0x/better-umbrel-search:${{ steps.version.outputs.version }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

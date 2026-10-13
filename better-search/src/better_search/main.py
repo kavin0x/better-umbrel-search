@@ -85,6 +85,10 @@ def create_app(
         target = safe_library_file(settings.library_path, path)
         if target is None:
             raise HTTPException(status_code=404, detail="file not found")
+        relative = target.relative_to(settings.library_path.resolve()).as_posix()
+        row = state.db.get_file(relative)
+        if row is None or row["status"] != "indexed":
+            raise HTTPException(status_code=404, detail="file not found")
         return FileResponse(target)
 
     dist = _web_dist(settings)
