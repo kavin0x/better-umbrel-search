@@ -571,37 +571,45 @@ class Indexer:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            try:
+                self._tick()
+            except Exception:
+                logger.exception("index loop failed")
+                self.last_error = "Indexing hit an unexpected error and will retry."
+                self._stop.wait(1)
+
+    def _tick(self) -> None:
+        if self._cancel.is_set():
+            self.state = "stopped"
+            self.current_file = None
+            self._stop.wait(0.5)
+            return
+        if not self.library.exists():
+            self.state = "waiting-for-library"
+            self._stop.wait(2)
+            return
+        if self.settings.stay_on_main_device and library_is_external(self.library):
+            self.state = "external-drive-blocked"
+            self.last_error = "The library is on an external drive, so nothing was indexed."
+            self._stop.wait(15)
+            return
+        self._ensure_watcher()
+        self.full_scan()
+        if self._cancel.is_set():
+            self.state = "stopped"
+            self.current_file = None
+            return
+        if self.state == "external-drive-blocked":
+            self._stop.wait(15)
+            return
+        deadline = time.monotonic() + self.rescan_interval
+        while not self._stop.is_set() and time.monotonic() < deadline:
             if self._cancel.is_set():
-                self.state = "stopped"
-                self.current_file = None
-                self._stop.wait(0.5)
-                continue
-            if not self.library.exists():
-                self.state = "waiting-for-library"
-                self._stop.wait(2)
-                continue
-            if self.settings.stay_on_main_device and library_is_external(self.library):
-                self.state = "external-drive-blocked"
-                self.last_error = "The library is on an external drive, so nothing was indexed."
-                self._stop.wait(15)
-                continue
-            self._ensure_watcher()
-            self.full_scan()
-            if self._cancel.is_set():
-                self.state = "stopped"
-                self.current_file = None
-                continue
-            if self.state == "external-drive-blocked":
-                self._stop.wait(15)
-                continue
-            deadline = time.monotonic() + self.rescan_interval
-            while not self._stop.is_set() and time.monotonic() < deadline:
-                if self._cancel.is_set():
-                    break
-                self.state = "watching"
-                self.drain()
-                self._drain_priority()
-                self._stop.wait(0.5)
+                break
+            self.state = "watching"
+            self.drain()
+            self._drain_priority()
+            self._stop.wait(0.5)
 
     def _ensure_watcher(self) -> None:
         if self._observer is not None:

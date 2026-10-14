@@ -170,6 +170,9 @@ class Database:
         if row is None:
             return None
         if int(row["size"]) == size and float(row["mtime"]) == mtime and row["status"] in {"indexed", "skipped"}:
+            # A cleared hash means the extracted text is stale and must be read again.
+            if row["status"] == "indexed" and row["content_hash"] is None:
+                return None
             return row
         return None
 

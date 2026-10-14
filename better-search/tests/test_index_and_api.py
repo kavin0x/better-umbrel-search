@@ -166,6 +166,34 @@ def test_second_scan_does_not_reembed(stack) -> None:
     assert stack.embedder.passage_calls == calls
 
 
+def test_cleared_content_hash_is_indexed_again(stack) -> None:
+    calls = stack.embedder.passage_calls
+    stack.app.state.search.db._write.execute(
+        "UPDATE files SET content_hash = NULL WHERE path = ?",
+        ("notes/roof.txt",),
+    )
+    stack.app.state.search.db._write.commit()
+    stack.rescan()
+    assert stack.embedder.passage_calls > calls
+
+
+def test_index_loop_retries_after_an_unexpected_error(stack, monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def flaky() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("disk hiccup")
+        stack.indexer._stop.set()
+
+    monkeypatch.setattr(stack.indexer, "full_scan", flaky)
+    monkeypatch.setattr(stack.indexer, "_ensure_watcher", lambda: None)
+    monkeypatch.setattr(stack.indexer._stop, "wait", lambda timeout=None: None)
+    stack.indexer._loop()
+    assert calls["n"] == 2
+    assert stack.indexer.last_error == "Indexing hit an unexpected error and will retry."
+
+
 def test_new_file_is_indexed_on_the_next_scan(stack) -> None:
     (stack.library / "notes" / "later.txt").write_text(
         "brand new contract for the porch",

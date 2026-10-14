@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "3.3"
+version: "3.3.1"
 port: 8787
 storage:
   dataRoot: data
@@ -28,10 +28,9 @@ repo: https://github.com/kavin0x/better-umbrel-search
 support: https://github.com/kavin0x/better-umbrel-search/issues
 submission: https://umbrel.com
 releaseNotes: >-
-  A search for a name or a filename stays on that file. "grandmas" matches
-  grandma photos by name, and "paper by Anup Shah" ranks that document above
-  an unrelated resume. Loose photo guesses are left out. PDF title and author
-  metadata are indexed too.
+  The app starts again on an existing install. The data folder from 0.3.x is
+  handed to the app user before the server listens, so Umbrel can connect.
+  PDFs whose extracted text was cleared are indexed again.
 gallery: []
 dependencies: []
 path: ""

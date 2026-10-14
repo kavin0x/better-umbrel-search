@@ -10,6 +10,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.17 /uv /uvx /bin/
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libmagic1 \
         tesseract-ocr \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -22,8 +23,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
     WEB_DIST=/app/web/dist \
     STAY_ON_MAIN_DEVICE=1 \
     PYTHONUNBUFFERED=1
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN useradd --system --uid 1000 --no-create-home app \
-    && mkdir -p /data && chown app /data
-USER 1000:1000
+    && mkdir -p /data && chown app /data \
+    && chmod 755 /usr/local/bin/entrypoint.sh
 EXPOSE 8787
+ENTRYPOINT ["entrypoint.sh"]
 CMD ["uvicorn", "better_search.main:app", "--host", "0.0.0.0", "--port", "8787"]
