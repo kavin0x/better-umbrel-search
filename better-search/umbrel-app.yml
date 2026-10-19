@@ -4,7 +4,7 @@ name: Search
 tagline: Semantic search for the main disk
 icon: icon.svg
 category: files
-version: "3.3.1"
+version: "3.3.2"
 port: 8787
 storage:
   dataRoot: data
@@ -28,9 +28,10 @@ repo: https://github.com/kavin0x/better-umbrel-search
 support: https://github.com/kavin0x/better-umbrel-search/issues
 submission: https://umbrel.com
 releaseNotes: >-
-  The app starts again on an existing install. The data folder from 0.3.x is
-  handed to the app user before the server listens, so Umbrel can connect.
-  PDFs whose extracted text was cleared are indexed again.
+  The server listens before the model cache is handed to the app user, so
+  Umbrel can connect on an existing install. The Home folder you mount is
+  indexed even when that disk looks removable. Folders on a different disk
+  inside Home are still skipped.
 gallery: []
 dependencies: []
 path: ""

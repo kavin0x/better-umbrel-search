@@ -333,18 +333,11 @@ def test_content_route_refuses_unindexed_and_symlinked_files(stack) -> None:
     assert stack.client.get("/content", params={"path": "link.txt"}).status_code == 404
 
 
-def test_external_library_is_not_indexed(stack, monkeypatch) -> None:
-    monkeypatch.setattr("better_search.indexer.library_is_external", lambda _path: True)
-    (stack.library / "extra.txt").write_text("should stay out", encoding="utf-8")
+def test_selected_library_is_indexed_even_when_the_disk_looks_removable(stack) -> None:
+    (stack.library / "extra.txt").write_text("roof leak on the home disk", encoding="utf-8")
     stack.rescan()
-    assert stack.indexer.state == "external-drive-blocked"
-    response = stack.client.post(
-        "/graphql",
-        json={"query": '{ search(q: "should stay out") { hits { name } } }'},
-    )
-    names = [hit["name"] for hit in response.json()["data"]["search"]["hits"]]
-    assert "extra.txt" not in names
-    assert stack.app.state.search.db.get_file("extra.txt") is None
+    assert stack.indexer.state != "external-drive-blocked"
+    assert stack.app.state.search.db.get_file("extra.txt") is not None
 
 
 def test_stop_names_the_current_file_and_leaves_the_rest(stack) -> None:

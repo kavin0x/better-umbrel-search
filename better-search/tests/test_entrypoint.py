@@ -81,7 +81,8 @@ def _run(
 def test_root_gives_the_data_directory_to_the_app_user_before_listening(tmp_path: Path) -> None:
     completed, chown, dropped = _run(tmp_path, "0")
     assert completed.returncode == 0, completed.stderr
-    assert f"-R app:app {tmp_path / 'data'}" in chown
+    assert f"app:app {tmp_path / 'data'}" in chown
+    assert "-R " not in chown
     assert "sh -c" in dropped
     assert (tmp_path / "data").is_dir()
     assert (tmp_path / "ran").read_text(encoding="utf-8") == "started"

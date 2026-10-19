@@ -22,10 +22,25 @@ if [ "$(id -u)" = "0" ]; then
   if [ -e "$data_dir/index.sqlite" ]; then
     sqlite_owner=$(stat -c %u "$data_dir/index.sqlite")
   fi
-  # A recursive chown of the model cache blocks the port. Do it once, when
-  # the folder or the index is still owned by root.
-  if [ "$owner" != "$app_uid" ] || [ "$sqlite_owner" != "$app_uid" ]; then
-    chown -R app:app "$data_dir"
+  # Only the directory and the index must be writable before the port opens.
+  # A recursive chown of the model cache keeps Umbrel from connecting.
+  if [ "$owner" != "$app_uid" ]; then
+    chown app:app "$data_dir"
+  fi
+  if [ -e "$data_dir/index.sqlite" ] && [ "$sqlite_owner" != "$app_uid" ]; then
+    chown app:app "$data_dir/index.sqlite"
+    if [ -e "$data_dir/index.sqlite-wal" ]; then
+      chown app:app "$data_dir/index.sqlite-wal"
+    fi
+    if [ -e "$data_dir/index.sqlite-shm" ]; then
+      chown app:app "$data_dir/index.sqlite-shm"
+    fi
+  fi
+  if [ -d "$data_dir/models" ]; then
+    model_owner=$(stat -c %u "$data_dir/models")
+    if [ "$model_owner" != "$app_uid" ]; then
+      chown -R app:app "$data_dir/models" &
+    fi
   fi
   exec setpriv --reuid=app --regid=app --clear-groups -- "$@"
 fi

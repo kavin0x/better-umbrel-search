@@ -19,7 +19,6 @@ from better_search.classify import (
     classify,
     device_predicate,
     iter_library_files,
-    library_is_external,
 )
 from better_search.config import Settings
 from better_search.db import Database
@@ -231,10 +230,6 @@ class Indexer:
             return
         if not self.library.exists():
             self.state = "waiting-for-library"
-            return
-        if self.settings.stay_on_main_device and library_is_external(self.library):
-            self.state = "external-drive-blocked"
-            self.last_error = "The library is on an external drive, so nothing was indexed."
             return
         self._same = device_predicate(self.library) if self.settings.stay_on_main_device else _always_same
         self.scan_token = uuid.uuid4().hex
@@ -588,19 +583,11 @@ class Indexer:
             self.state = "waiting-for-library"
             self._stop.wait(2)
             return
-        if self.settings.stay_on_main_device and library_is_external(self.library):
-            self.state = "external-drive-blocked"
-            self.last_error = "The library is on an external drive, so nothing was indexed."
-            self._stop.wait(15)
-            return
         self._ensure_watcher()
         self.full_scan()
         if self._cancel.is_set():
             self.state = "stopped"
             self.current_file = None
-            return
-        if self.state == "external-drive-blocked":
-            self._stop.wait(15)
             return
         deadline = time.monotonic() + self.rescan_interval
         while not self._stop.is_set() and time.monotonic() < deadline:
