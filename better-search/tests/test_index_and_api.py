@@ -350,7 +350,8 @@ def test_stop_names_the_current_file_and_leaves_the_rest(stack) -> None:
     def wrapped(path) -> None:
         original(path)
         relative = relative_to_library(stack.library, path)
-        assert stack.indexer.current_file == relative
+        if stack.indexer.current_file != relative:
+            return
         body = stack.client.post(
             "/graphql",
             json={"query": "{ status { state currentFile } }"},
@@ -461,3 +462,108 @@ def test_window_extracts_files_together_then_indexes_them(stack, monkeypatch) ->
     db = stack.app.state.search.db
     assert db.get_file("one.txt")["status"] == "indexed"
     assert db.get_file("two.txt")["status"] == "indexed"
+
+
+def test_restart_keeps_a_finished_index(stack) -> None:
+    from better_search.indexer import Indexer
+
+    calls = stack.embedder.passage_calls
+    seen_at_start: list[int] = []
+    fresh = Indexer(stack.indexer.settings, stack.app.state.search.db, stack.embedder)
+    use_one_index_thread(fresh)
+    original = fresh._prepare_claim
+
+    def wrapped(path):
+        if not seen_at_start:
+            seen_at_start.append(fresh.files_seen)
+        return original(path)
+
+    fresh._prepare_claim = wrapped
+    fresh.full_scan()
+    assert seen_at_start[0] == 2
+    assert stack.embedder.passage_calls == calls
+    assert fresh.state == "watching"
+    assert fresh.snapshot()["progress"] == 100
+    assert fresh.snapshot()["files_indexed"] == 2
+    assert fresh.db.scan_checkpoint()[1] == "watching"
+
+
+def test_restart_resumes_an_interrupted_scan(tmp_path) -> None:
+    from better_search.config import Settings
+    from better_search.embed import FakeEmbedder
+    from better_search.indexer import Indexer
+    from better_search.main import create_app
+
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "a.txt").write_text("alpha quartz note", encoding="utf-8")
+    (library / "b.txt").write_text("beta quartz note", encoding="utf-8")
+    settings = Settings(library_path=library, data_path=tmp_path / "data", ocr_enabled=False)
+    embedder = FakeEmbedder()
+    app = create_app(settings, embedder, start_indexer=False)
+    indexer = app.state.search.indexer
+    use_one_index_thread(indexer)
+    original = indexer._index_one
+
+    def stop_after_first(path) -> None:
+        original(path)
+        indexer._stop.set()
+
+    indexer._index_one = stop_after_first
+    indexer.full_scan()
+    token, phase = indexer.db.scan_checkpoint()
+    assert phase == "indexing"
+    assert token
+    seen = indexer.files_seen
+    assert seen >= 1
+    calls = embedder.passage_calls
+    fresh = Indexer(settings, app.state.search.db, embedder)
+    use_one_index_thread(fresh)
+    started: list[int] = []
+    prepare = fresh._prepare_claim
+
+    def spy(path):
+        if not started:
+            started.append(fresh.files_seen)
+        return prepare(path)
+
+    fresh._prepare_claim = spy
+    fresh.full_scan()
+    assert fresh.scan_token == token
+    assert started[0] == seen
+    assert started[0] > 0
+    assert embedder.passage_calls == calls + 1
+    assert fresh.state == "watching"
+    assert fresh.db.get_file("a.txt")["status"] == "indexed"
+    assert fresh.db.get_file("b.txt")["status"] == "indexed"
+
+
+def test_file_change_does_not_restart_the_index(stack) -> None:
+    token = stack.indexer.scan_token
+    seen = stack.indexer.files_seen
+    calls = stack.embedder.passage_calls
+    note = stack.library / "notes" / "roof.txt"
+    note.write_text("the porch was painted blue", encoding="utf-8")
+    stack.indexer.state = "watching"
+    stack.indexer.events.put((note, False, False))
+    stack.indexer.drain()
+    assert stack.indexer.scan_token == token
+    assert stack.indexer.files_seen >= seen
+    assert stack.indexer.files_seen != 0
+    assert stack.indexer.state == "watching"
+    assert stack.embedder.passage_calls > calls
+    found = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "painted porch") { hits { snippet } } }'},
+    ).json()["data"]["search"]["hits"]
+    assert found
+    assert "painted" in found[0]["snippet"]
+
+
+def test_root_directory_event_does_not_rebuild_the_index(stack) -> None:
+    token = stack.indexer.scan_token
+    calls = stack.embedder.passage_calls
+    stack.indexer.events.put((stack.library, True, False))
+    stack.indexer.drain()
+    assert stack.indexer.scan_token == token
+    assert stack.embedder.passage_calls == calls

@@ -165,6 +165,54 @@ class Database:
             "failed": int(row["failed"]),
         }
 
+    def counts_for_token(self, token: str) -> dict[str, int]:
+        row = self._fetch(
+            """
+            SELECT
+                COUNT(*) AS seen,
+                COALESCE(SUM(status = 'indexed'), 0) AS indexed,
+                COALESCE(SUM(status = 'skipped'), 0) AS skipped,
+                COALESCE(SUM(status = 'failed'), 0) AS failed
+            FROM files
+            WHERE scan_token = ?
+            """,
+            (token,),
+        )[0]
+        return {
+            "seen": int(row["seen"]),
+            "indexed": int(row["indexed"]),
+            "skipped": int(row["skipped"]),
+            "failed": int(row["failed"]),
+        }
+
+    def scan_checkpoint(self) -> tuple[str, str]:
+        with self._lock:
+            token = self._meta("scan_token") or ""
+            phase = self._meta("scan_phase") or ""
+            return token, phase
+
+    def save_scan_checkpoint(self, token: str, phase: str) -> None:
+        with self._lock:
+            self._set_meta("scan_token", token)
+            self._set_meta("scan_phase", phase)
+            self._write.commit()
+
+    def drop_missing(self, library: Path) -> int:
+        """Remove index rows whose files are no longer on disk."""
+        with self._lock:
+            rows = self._write.execute("SELECT path FROM files").fetchall()
+            removed = 0
+            for row in rows:
+                relative = str(row["path"])
+                if (library / relative).is_file():
+                    continue
+                self._delete_chunks_for_path(relative)
+                self._write.execute("DELETE FROM files WHERE path = ?", (relative,))
+                removed += 1
+            if removed:
+                self._write.commit()
+            return removed
+
     def unchanged(self, path: str, size: int, mtime: float) -> sqlite3.Row | None:
         row = self.get_file(path)
         if row is None:

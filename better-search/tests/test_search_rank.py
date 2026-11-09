@@ -1,5 +1,7 @@
 from PIL import Image
 
+from better_search.search import snippet_for
+
 
 def test_unlabeled_photo_is_not_a_guess_for_a_name(stack) -> None:
     Image.new("RGB", (8, 8), (200, 180, 160)).save(stack.library / "baby.jpg")
@@ -51,3 +53,40 @@ def test_author_sentence_ranks_the_paper_above_a_resume(stack) -> None:
     assert names[0] == "method-notes.txt"
     if "nidhi-resume.txt" in names:
         assert names.index("method-notes.txt") < names.index("nidhi-resume.txt")
+
+
+def test_a_file_with_both_words_beats_a_file_with_one(stack) -> None:
+    (stack.library / "only-roof.txt").write_text(
+        "The roof was replaced in 2019 and the shingles are brown.",
+        encoding="utf-8",
+    )
+    stack.rescan()
+    hits = stack.client.post(
+        "/graphql",
+        json={"query": '{ search(q: "roof leak") { hits { name } } }'},
+    ).json()["data"]["search"]["hits"]
+    names = [hit["name"] for hit in hits]
+    assert names[0] == "roof.txt"
+    assert "only-roof.txt" in names
+    assert names.index("roof.txt") < names.index("only-roof.txt")
+
+
+def test_folder_limits_the_hits(stack) -> None:
+    archive = stack.library / "archive"
+    archive.mkdir()
+    (archive / "old.txt").write_text("the roof leak was in the archive", encoding="utf-8")
+    stack.rescan()
+    hits = stack.client.post(
+        "/graphql",
+        json={
+            "query": 'query ($folder: String) { search(q: "roof leak", folder: $folder) { hits { name } } }',
+            "variables": {"folder": "archive"},
+        },
+    ).json()["data"]["search"]["hits"]
+    assert [hit["name"] for hit in hits] == ["old.txt"]
+
+
+def test_snippet_centers_on_the_words_that_matched() -> None:
+    text = ("intro about the house " * 40) + "anup shah published the method" + (" and then more notes" * 40)
+    snippet = snippet_for(text, "research paper made by anup shah")
+    assert "anup shah" in snippet

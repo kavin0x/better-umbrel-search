@@ -99,23 +99,51 @@ def fts_match(query: str) -> str | None:
     return " OR ".join(tokens)
 
 
+def _forms(token: str) -> tuple[str, ...]:
+    forms = [token]
+    if len(token) >= 5 and token.endswith("s"):
+        forms.append(token[:-1])
+    if len(token) >= 6 and token.endswith("es"):
+        forms.append(token[:-2])
+    return tuple(dict.fromkeys(forms))
+
+
+def token_hits(text: str, tokens: list[str]) -> int:
+    folded = text.casefold()
+    return sum(1 for token in tokens if any(form in folded for form in _forms(token)))
+
+
 def snippet_for(text: str, query: str, window: int = 240) -> str:
     compact = " ".join(text.split())
     if len(compact) <= window:
         return compact
+    tokens = query_tokens(query)
     haystack = compact.casefold()
-    found_at = -1
-    for token in re.findall(r"[\w]+", query, flags=re.UNICODE):
-        found_at = haystack.find(token.casefold())
-        if found_at != -1:
-            break
-    if found_at == -1:
+    positions: list[int] = []
+    for token in tokens:
+        for form in _forms(token):
+            start = 0
+            while True:
+                found_at = haystack.find(form, start)
+                if found_at == -1:
+                    break
+                positions.append(found_at)
+                start = found_at + len(form)
+    if not positions:
         return compact[:window].rstrip() + "…"
-    start = max(0, found_at - 80)
-    piece = compact[start : start + window].strip()
-    if start > 0:
+    best_start = 0
+    best_count = -1
+    for found_at in positions:
+        start = max(0, found_at - 80)
+        piece = haystack[start : start + window]
+        count = sum(1 for token in tokens if any(form in piece for form in _forms(token)))
+        if count > best_count:
+            best_count = count
+            best_start = start
+    piece = compact[best_start : best_start + window].strip()
+    if best_start > 0:
         piece = "…" + piece
-    if start + window < len(compact):
+    if best_start + window < len(compact):
         piece += "…"
     return piece
 
@@ -199,8 +227,10 @@ def search(
             similarities[chunk_id] = max(similarities.get(chunk_id, 0.0), similarity)
     except Exception:
         logger.exception("image vector search failed")
-    # Keyword order is bm25, with the file name weighted above body text.
-    # Those hits stay ahead of vector-only neighbors.
+    # A file that contains more of the query outranks a file that shares one
+    # word. Filename evidence outranks body text. Vector-only neighbors stay
+    # behind anything the words actually appear in.
+    tokens = query_tokens(query)
     keyword_ranked = [(chunk_id, 1.0 + 1.0 / (60 + rank)) for rank, chunk_id in enumerate(keyword_ids, start=1)]
     fused_rest = reciprocal_rank_fusion(
         [
@@ -208,10 +238,8 @@ def search(
             [chunk_id for chunk_id in image_ids if chunk_id not in keyword_set],
         ]
     )
-    fused = keyword_ranked + fused_rest
-    hits: list[Hit] = []
-    seen: set[str] = set()
-    for chunk_id, score in fused:
+    ranked: list[tuple[int, int, int, float, float, Hit]] = []
+    for chunk_id, score in keyword_ranked + fused_rest:
         info = db.chunk_info(chunk_id)
         if info is None:
             continue
@@ -219,24 +247,38 @@ def search(
             continue
         if not in_folder(info["path"], folder):
             continue
-        if info["path"] in seen:
-            continue
-        seen.add(info["path"])
         page = info["page"]
         similarity = similarities.get(chunk_id)
         if similarity is None:
             similarity = _stored_similarity(db, chunk_id, text_query, image_query)
-        hits.append(
-            Hit(
-                path=info["path"],
-                name=info["name"],
-                file_type=info["file_type"],
-                page=None if page is None else int(page),
-                snippet=snippet_for(info["text"], query),
-                score=round(float(score), 6),
-                similarity=None if similarity is None else round(similarity, 4),
+        name_hits = max(token_hits(str(info["name"]), tokens), token_hits(str(info["path"]), tokens))
+        body_hits = token_hits(str(info["text"]), tokens)
+        ranked.append(
+            (
+                name_hits,
+                body_hits,
+                similarity if similarity is not None else -1.0,
+                float(score),
+                chunk_id,
+                Hit(
+                    path=info["path"],
+                    name=info["name"],
+                    file_type=info["file_type"],
+                    page=None if page is None else int(page),
+                    snippet=snippet_for(info["text"], query),
+                    score=round(float(score), 6),
+                    similarity=None if similarity is None else round(similarity, 4),
+                ),
             )
         )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+    hits: list[Hit] = []
+    seen: set[str] = set()
+    for _name_hits, _body_hits, _similarity, _score, _chunk_id, hit in ranked:
+        if hit.path in seen:
+            continue
+        seen.add(hit.path)
+        hits.append(hit)
         if len(hits) >= limit:
             break
     took_ms = int((time.perf_counter() - started) * 1000)

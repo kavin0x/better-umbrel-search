@@ -41,15 +41,20 @@ mark {
 .app {
   width: min(760px, calc(100% - 32px));
   margin: 0 auto;
-  padding: 48px 0 80px;
+  padding: 36px 0 80px;
+}
+
+.app.with-preview {
+  width: min(1080px, calc(100% - 32px));
 }
 
 .top {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  align-items: baseline;
+  align-items: flex-end;
   flex-wrap: wrap;
+  margin-bottom: 22px;
 }
 
 .wordmark {
@@ -78,6 +83,8 @@ mark {
   justify-content: flex-end;
   gap: 6px;
   min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
 }
 
 .status-file {
@@ -90,10 +97,15 @@ mark {
 }
 
 .status-counts {
-  flex: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
 }
 
-.index-toggle {
+.index-toggle,
+.clear,
+.priority button,
+.open {
   flex: none;
   border: 1px solid var(--line);
   background: var(--copper-dim);
@@ -101,6 +113,7 @@ mark {
   border-radius: 999px;
   padding: 4px 10px;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .index-toggle:disabled {
@@ -129,6 +142,7 @@ mark {
   height: 8px;
   border-radius: 99px;
   background: var(--good);
+  flex: none;
 }
 
 .dot.busy {
@@ -136,10 +150,11 @@ mark {
 }
 
 .lede {
-  margin: 8px 0 28px;
+  margin: 4px 0 0;
   color: var(--muted);
-  max-width: 46ch;
-  line-height: 1.5;
+  max-width: 42ch;
+  line-height: 1.4;
+  font-size: 14px;
 }
 
 .searchbox {
@@ -162,43 +177,25 @@ mark {
   outline: none;
   background: transparent;
   font-size: 20px;
+  min-width: 0;
 }
 
-.priority {
+.toolbar {
   display: flex;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.priority input {
-  flex: 1;
-  border: 1px solid var(--line);
-  background: transparent;
-  border-radius: 999px;
-  padding: 8px 14px;
-  outline: none;
-}
-
-.priority input:focus {
-  border-color: rgba(226, 163, 106, 0.7);
-}
-
-.priority button {
-  border: 1px solid var(--line);
-  background: var(--copper-dim);
-  color: var(--copper);
-  border-radius: 999px;
-  padding: 8px 14px;
-  cursor: pointer;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 14px 0 8px;
+  flex-wrap: wrap;
 }
 
 .filters {
   display: flex;
   gap: 8px;
-  margin: 16px 0 22px;
 }
 
-.filters button {
+.filters button,
+.scope {
   border: 1px solid var(--line);
   background: transparent;
   border-radius: 999px;
@@ -212,24 +209,66 @@ mark {
   color: var(--copper);
 }
 
-.meta {
+.scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  min-width: min(280px, 100%);
+  cursor: text;
+}
+
+.scope input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  min-width: 0;
+  color: var(--ink);
+}
+
+.meta,
+.hint,
+.empty {
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.45;
+}
+
+.meta {
   min-height: 1.2em;
-  margin-bottom: 12px;
+  margin: 0 0 14px;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.app.with-preview .workspace {
+  grid-template-columns: minmax(0, 1fr) 300px;
 }
 
 .results {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+}
+
+.empty {
+  margin: 8px 2px 0;
 }
 
 .result {
   display: grid;
-  grid-template-columns: 72px 1fr;
+  grid-template-columns: 64px minmax(0, 1fr);
   gap: 14px;
   padding: 12px;
+  min-width: 0;
+  overflow: hidden;
   border-radius: 16px;
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -237,26 +276,61 @@ mark {
   color: inherit;
 }
 
+.result.selected {
+  border-color: rgba(226, 163, 106, 0.7);
+  background: #221e18;
+}
+
 .thumb {
-  width: 72px;
-  height: 72px;
+  width: 64px;
+  height: 64px;
   border-radius: 12px;
   object-fit: cover;
   background: #2a261f;
 }
 
-.thumb.placeholder {
+.thumb.placeholder,
+.preview-mark {
   display: grid;
   place-items: center;
   color: var(--copper);
   font-family: Palatino, Georgia, serif;
-  font-size: 22px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
 }
 
-.result h2 {
+.preview-mark {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 14px;
+  background: #2a261f;
+  font-size: 28px;
+}
+
+.result-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.result h2,
+.preview h2 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kind {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .path,
@@ -268,47 +342,122 @@ mark {
 }
 
 .path {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
   font-size: 12px;
 }
 
 .confidence {
+  margin-left: auto;
   color: var(--copper);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  font-size: 12px;
   flex: none;
 }
 
-.bar {
-  margin-top: 8px;
-  height: 3px;
-  border-radius: 99px;
-  background: rgba(244, 240, 230, 0.08);
+.preview {
+  position: sticky;
+  top: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.preview-image {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 14px;
+  background: #2a261f;
+}
+
+.preview h2 {
+  margin-top: 10px;
+  white-space: normal;
+}
+
+.preview .snippet {
+  display: -webkit-box;
+  -webkit-line-clamp: 8;
+  -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.bar span {
-  display: block;
-  height: 100%;
-  background: var(--copper);
+.open {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 8px 14px;
+}
+
+.index-tools {
+  margin-top: 28px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.index-tools summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.priority {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.priority input {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 999px;
+  padding: 8px 14px;
+  outline: none;
+  color: var(--ink);
+}
+
+.priority input:focus,
+.scope:focus-within {
+  border-color: rgba(226, 163, 106, 0.7);
+}
+
+.hint {
+  margin: 8px 0 0;
 }
 
 .error {
   color: #f0b4a8;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 800px) {
+  .app.with-preview {
+    width: min(760px, calc(100% - 32px));
+  }
+
+  .app.with-preview .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .preview {
+    display: none;
+  }
+
   .top {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .status {
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .status-copy {
+    justify-content: flex-start;
   }
 
   .wordmark {
     font-size: 34px;
-  }
-
-  .result {
-    grid-template-columns: 56px 1fr;
   }
 }

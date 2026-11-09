@@ -1,7 +1,7 @@
 manifestVersion: 1
 id: better-search
 name: Search
-tagline: Semantic search for the main disk
+tagline: Find a file by what it is about
 icon: icon.svg
 category: files
 version: "3.3.2"
@@ -11,27 +11,28 @@ storage:
 folderAccess:
   - id: library
     name: Home
-    note: Internal Home folder, mounted read-only at /library. External disks are not indexed.
+    note: >-
+      Home on the internal disk, mounted read-only at /library.
+      USB drives and other external disks are not indexed.
     mounts:
       - service: app
         targetPath: /library
         readOnly: true
-description: >-
-  Search documents and photos on the main disk. The first run indexes what is
-  already there, and new files are picked up as they appear. USB drives and
-  other external disks are not indexed, even when they are mounted inside the
-  library folder. In the app settings, add your Home folder on internal storage
-  to the app service at /library, read-only.
+description: |-
+  Search the Home folder on your main disk by describing the file. Notes, PDFs, Office documents, and photos are indexed, so a query can match the words inside a document or what a photo shows, not only the filename.
+
+  The first run reads what is already there. Files you add later are picked up on their own. From inside the app you can pause indexing, or move one folder to the front of the line.
+
+  In the app settings, add your Home folder on internal storage and mount it read-only on the app service at /library. Disks other than that one are skipped, including a folder inside Home that actually lives on a USB drive.
 developer: kavin0x
 website: https://github.com/kavin0x/better-umbrel-search
 repo: https://github.com/kavin0x/better-umbrel-search
 support: https://github.com/kavin0x/better-umbrel-search/issues
 submission: https://umbrel.com
-releaseNotes: >-
-  The server listens before the model cache is handed to the app user, so
-  Umbrel can connect on an existing install. The Home folder you mount is
-  indexed even when that disk looks removable. Folders on a different disk
-  inside Home are still skipped.
+releaseNotes: |-
+  The app opens again after this update on an existing install.
+
+  The Home folder you mount is indexed when it is on the internal disk, even if the system marks that disk as removable. A folder inside Home that lives on a different disk is still skipped.
 gallery: []
 dependencies: []
 path: ""

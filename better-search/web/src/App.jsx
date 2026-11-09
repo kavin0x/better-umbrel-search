@@ -3,8 +3,8 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
 const STATUS = `query { status { state filesSeen filesIndexed filesSkipped filesFailed lastError priorityFolder libraryTotal progress currentFile } }`;
 
-const SEARCH = `query ($q: String!, $fileType: FileType!, $limit: Int!) {
-  search(q: $q, fileType: $fileType, limit: $limit) {
+const SEARCH = `query ($q: String!, $fileType: FileType!, $folder: String, $limit: Int!) {
+  search(q: $q, fileType: $fileType, folder: $folder, limit: $limit) {
     tookMs
     hits { path name fileType page snippet score similarity }
   }
@@ -33,9 +33,19 @@ async function gql(query, variables) {
   return body.data;
 }
 
-function highlight(text, query) {
+function queryForms(query) {
   const tokens = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  if (!tokens.length) return text;
+  const forms = [];
+  for (const token of tokens) {
+    forms.push(token);
+    if (token.length >= 5 && token.endsWith("s")) forms.push(token.slice(0, -1));
+  }
+  return [...new Set(forms)];
+}
+
+function highlight(text, query) {
+  const tokens = queryForms(query);
+  if (!tokens.length || !text) return text;
   const pattern = new RegExp(`(${tokens.map(escapeRegExp).join("|")})`, "ig");
   const parts = text.split(pattern);
   return parts.map((part, index) =>
@@ -72,24 +82,53 @@ function statusParts(status) {
   return { label: settled, file: "" };
 }
 
+function contentUrl(path) {
+  return `/content?path=${encodeURIComponent(path)}`;
+}
+
+function parentFolder(path) {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? "" : path.slice(0, slash);
+}
+
+function kindLabel(hit) {
+  if (hit.fileType === "image") return "Photo";
+  const ext = hit.name.includes(".") ? hit.name.split(".").pop().toUpperCase() : "File";
+  return ext;
+}
+
+function pageSuffix(hit) {
+  if (!hit.page) return "";
+  const ext = hit.name.includes(".") ? hit.name.split(".").pop().toLowerCase() : "";
+  if (!["pdf", "ppt", "pptx", "odp"].includes(ext)) return "";
+  return ` · page ${hit.page}`;
+}
+
 export function App() {
   const reduce = useReducedMotion();
   const [query, setQuery] = useState("");
-  const [folder, setFolder] = useState("");
+  const [scope, setScope] = useState("");
+  const [priority, setPriority] = useState("");
   const [fileType, setFileType] = useState("ALL");
   const [status, setStatus] = useState(null);
   const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [statusError, setStatusError] = useState("");
   const [indexAction, setIndexAction] = useState(false);
+  const [selected, setSelected] = useState(0);
 
   useEffect(() => {
     let stop = false;
     const tick = async () => {
       try {
         const data = await gql(STATUS);
-        if (!stop) setStatus(data.status);
+        if (!stop) {
+          setStatus(data.status);
+          setStatusError("");
+        }
       } catch (err) {
-        if (!stop) setError(err.message);
+        if (!stop) setStatusError(err.message);
       }
     };
     tick();
@@ -103,25 +142,66 @@ export function App() {
   useEffect(() => {
     if (!query.trim()) {
       setResult(null);
+      setSearching(false);
+      setSearchError("");
       return undefined;
     }
     let stop = false;
+    setSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const data = await gql(SEARCH, { q: query, fileType, limit: 20 });
+        const folder = scope.trim();
+        const data = await gql(SEARCH, {
+          q: query,
+          fileType,
+          folder: folder || null,
+          limit: 20,
+        });
         if (!stop) {
           setResult(data.search);
-          setError("");
+          setSelected(0);
+          setSearchError("");
         }
       } catch (err) {
-        if (!stop) setError(err.message);
+        if (!stop) setSearchError(err.message);
+      } finally {
+        if (!stop) setSearching(false);
       }
     }, 180);
     return () => {
       stop = true;
       clearTimeout(timer);
     };
-  }, [query, fileType]);
+  }, [query, fileType, scope]);
+
+  const hits = result?.hits ?? [];
+  const current = hits[selected] ?? hits[0] ?? null;
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      const tag = event.target?.tagName;
+      const typingElsewhere = tag === "INPUT" && event.target.getAttribute("aria-label") !== "Search files";
+      if (typingElsewhere || tag === "TEXTAREA") return;
+      if (event.key === "Escape") {
+        setQuery("");
+        return;
+      }
+      if (!hits.length) return;
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelected((index) => Math.min(hits.length - 1, index + 1));
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelected((index) => Math.max(0, index - 1));
+      } else if (event.key === "Enter" && tag !== "BUTTON" && tag !== "SUMMARY") {
+        event.preventDefault();
+        const hit = hits[selected] ?? hits[0];
+        if (hit) window.open(contentUrl(hit.path), "_blank", "noreferrer");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [hits, selected]);
 
   const busy = status?.state === "indexing" || status?.state === "waiting-for-library" || Boolean(status?.priorityFolder);
 
@@ -136,9 +216,9 @@ export function App() {
     try {
       await gql(status.state === "stopped" ? RESUME_INDEXING : STOP_INDEXING);
       await refreshStatus();
-      setError("");
+      setStatusError("");
     } catch (err) {
-      setError(err.message);
+      setStatusError(err.message);
     } finally {
       setIndexAction(false);
     }
@@ -146,18 +226,19 @@ export function App() {
 
   async function submitPriority(event) {
     event.preventDefault();
-    const path = folder.trim();
+    const path = priority.trim();
     if (!path) return;
     try {
       await gql(PRIORITIZE, { path });
-      setFolder("");
-      setError("");
+      setPriority("");
+      setStatusError("");
       const data = await gql(STATUS);
       setStatus(data.status);
     } catch (err) {
-      setError(err.message);
+      setStatusError(err.message);
     }
   }
+
   const parts = statusParts(status);
   const canToggle = status?.state === "indexing" || status?.state === "watching" || status?.state === "stopped";
   const motionProps = useMemo(
@@ -171,11 +252,15 @@ export function App() {
           },
     [reduce],
   );
+  const shownError = searchError || statusError;
 
   return (
-    <main className="app">
+    <main className={current ? "app with-preview" : "app"}>
       <header className="top">
-        <h1 className="wordmark">Search</h1>
+        <div>
+          <h1 className="wordmark">Search</h1>
+          <p className="lede">Notes, PDFs, office files, and photos on the main disk.</p>
+        </div>
         <p className="status" aria-live="polite">
           <motion.span
             className={busy ? "dot busy" : "dot"}
@@ -219,10 +304,7 @@ export function App() {
           </div>
         ) : null}
       </header>
-      <p className="lede">
-        Finds notes, PDFs, office files, and photos on the main disk. New files are picked up as they appear.
-        External drives are left alone.
-      </p>
+
       <label className="searchbox">
         <span aria-hidden="true">⌕</span>
         <input
@@ -233,74 +315,154 @@ export function App() {
           onChange={(event) => setQuery(event.target.value)}
           autoFocus
         />
-      </label>
-      <motion.form className="priority" onSubmit={submitPriority} {...motionProps}>
-        <input
-          aria-label="Folder to index first"
-          placeholder="Index this folder first"
-          value={folder}
-          onChange={(event) => setFolder(event.target.value)}
-        />
-        <button type="submit">First</button>
-      </motion.form>
-      <div className="filters" role="tablist">
-        {FILTERS.map((filter) => (
-          <button
-            key={filter.id}
-            type="button"
-            className={fileType === filter.id ? "active" : ""}
-            onClick={() => setFileType(filter.id)}
-            aria-pressed={fileType === filter.id}
-          >
-            {filter.label}
+        {query ? (
+          <button type="button" className="clear" onClick={() => setQuery("")} aria-label="Clear search">
+            Clear
           </button>
-        ))}
+        ) : null}
+      </label>
+
+      <div className="toolbar">
+        <div className="filters" role="tablist">
+          {FILTERS.map((filter) => (
+            <button
+              key={filter.id}
+              type="button"
+              className={fileType === filter.id ? "active" : ""}
+              onClick={() => setFileType(filter.id)}
+              aria-pressed={fileType === filter.id}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+        <label className="scope">
+          <span>In</span>
+          <input
+            aria-label="Limit search to a folder"
+            placeholder="any folder"
+            value={scope}
+            onChange={(event) => setScope(event.target.value)}
+          />
+        </label>
       </div>
+
       <p className="meta">
-        {error ? <span className="error">{error}</span> : result ? `${result.hits.length} results · ${result.tookMs} ms` : ""}
+        {shownError ? (
+          <span className="error">{shownError}</span>
+        ) : searching ? (
+          "Searching…"
+        ) : result ? (
+          `${result.hits.length} ${result.hits.length === 1 ? "result" : "results"} · ${result.tookMs} ms`
+        ) : (
+          "↑↓ to move · enter to open · esc to clear"
+        )}
       </p>
       {status?.lastError && status.state === "external-drive-blocked" ? (
         <p className="error">{status.lastError}</p>
       ) : null}
-      <section className="results">
-        <AnimatePresence mode="popLayout">
-          {(result?.hits ?? []).map((hit) => (
-            <motion.a
-              className="result"
-              key={hit.path}
-              href={`/content?path=${encodeURIComponent(hit.path)}`}
-              target="_blank"
-              rel="noreferrer"
-              layout
-              {...motionProps}
-            >
-              {hit.fileType === "image" ? (
-                <img className="thumb" alt="" src={`/content?path=${encodeURIComponent(hit.path)}`} />
-              ) : (
-                <div className="thumb placeholder">{hit.name.slice(0, 1).toUpperCase()}</div>
-              )}
-              <div>
-                <h2>{hit.name}</h2>
-                <p className="path">
-                  {typeof hit.similarity === "number" ? (
-                    <span className="confidence" title="Similarity">
-                      {Math.round(hit.similarity * 100)}%
+
+      <div className="workspace">
+        <section className="results" aria-label="Results">
+          {!query.trim() ? (
+            <p className="empty">Type a name, a sentence, or what a photo shows.</p>
+          ) : null}
+          {query.trim() && result && hits.length === 0 && !searching ? (
+            <p className="empty">
+              {scope.trim()
+                ? `Nothing matches in ${scope.trim()}.`
+                : "Nothing matches. Try fewer words, or switch the filter."}
+            </p>
+          ) : null}
+          <AnimatePresence mode="popLayout">
+            {hits.map((hit, index) => (
+              <motion.a
+                className={index === selected ? "result selected" : "result"}
+                key={hit.path}
+                href={contentUrl(hit.path)}
+                target="_blank"
+                rel="noreferrer"
+                aria-current={index === selected ? "true" : undefined}
+                onMouseEnter={() => setSelected(index)}
+                onFocus={() => setSelected(index)}
+                {...motionProps}
+              >
+                {hit.fileType === "image" ? (
+                  <img className="thumb" alt="" src={contentUrl(hit.path)} />
+                ) : (
+                  <div className="thumb placeholder" aria-hidden="true">
+                    {kindLabel(hit).slice(0, 3)}
+                  </div>
+                )}
+                <div className="result-copy">
+                  <div className="result-title">
+                    <h2>{highlight(hit.name, query)}</h2>
+                    <span className="kind">{kindLabel(hit)}</span>
+                    {typeof hit.similarity === "number" ? (
+                      <span className="confidence" title="Similarity">
+                        {Math.round(hit.similarity * 100)}%
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="path">
+                    <span>
+                      {parentFolder(hit.path) || "Main disk"}
+                      {pageSuffix(hit)}
                     </span>
-                  ) : null}
-                  <span>
-                    {hit.path}
-                    {hit.page ? ` · page ${hit.page}` : ""}
-                  </span>
-                </p>
-                <p className="snippet">{highlight(hit.snippet, query)}</p>
-                <div className="bar" aria-hidden="true">
-                  <span style={{ width: `${Math.round((hit.similarity ?? 0) * 100)}%` }} />
+                  </p>
+                  <p className="snippet">{highlight(hit.snippet, query)}</p>
                 </div>
-              </div>
-            </motion.a>
-          ))}
+              </motion.a>
+            ))}
+          </AnimatePresence>
+        </section>
+
+        <AnimatePresence>
+          {current ? (
+            <motion.aside
+              className="preview"
+              key={current.path}
+              initial={reduce ? false : { opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={reduce ? undefined : { opacity: 0, x: 8 }}
+              transition={{ duration: 0.18 }}
+            >
+              {current.fileType === "image" ? (
+                <img className="preview-image" alt={current.name} src={contentUrl(current.path)} />
+              ) : (
+                <div className="preview-mark" aria-hidden="true">
+                  {kindLabel(current).slice(0, 4)}
+                </div>
+              )}
+              <p className="kind">{kindLabel(current)}</p>
+              <h2>{current.name}</h2>
+              <p className="path">{current.path}{pageSuffix(current)}</p>
+              <p className="snippet">{highlight(current.snippet, query)}</p>
+              <a className="open" href={contentUrl(current.path)} target="_blank" rel="noreferrer">
+                Open file
+              </a>
+            </motion.aside>
+          ) : null}
         </AnimatePresence>
-      </section>
+      </div>
+
+      <details className="index-tools">
+        <summary>Index a folder first</summary>
+        <form className="priority" onSubmit={submitPriority}>
+          <input
+            aria-label="Folder to index first"
+            placeholder="notes or photos/2024"
+            value={priority}
+            onChange={(event) => setPriority(event.target.value)}
+          />
+          <button type="submit">Queue</button>
+        </form>
+        <p className="hint">
+          {status?.priorityFolder
+            ? `Next up: ${status.priorityFolder}`
+            : "The walk keeps going. This folder is indexed on the next files, then the scan continues."}
+        </p>
+      </details>
     </main>
   );
 }

@@ -61,6 +61,7 @@ class _Claim:
     size: int
     mtime: float
     digest: str
+    fresh: bool
 
 
 @dataclass
@@ -134,6 +135,7 @@ class Indexer:
         self._priority_lock = threading.Lock()
         self.library_total = 0
         self._visited: set[str] = set()
+        self._generation = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -232,14 +234,29 @@ class Indexer:
             self.state = "waiting-for-library"
             return
         self._same = device_predicate(self.library) if self.settings.stay_on_main_device else _always_same
-        self.scan_token = uuid.uuid4().hex
-        self.state = "indexing"
-        self.files_seen = 0
-        self.files_indexed = 0
-        self.files_skipped = 0
-        self.files_failed = 0
-        self.last_error = None
+        token, phase = self.db.scan_checkpoint()
+        seen = self.db.counts()["seen"]
         self._visited = set()
+        if phase == "indexing" and token:
+            self.scan_token = token
+            self._generation = True
+            self._restore_token_counts()
+        elif phase == "watching" or (not phase and seen > 0):
+            self._generation = False
+            self.scan_token = token or uuid.uuid4().hex
+            if phase != "watching" or not token:
+                self.db.save_scan_checkpoint(self.scan_token, "watching")
+            self._restore_library_counts()
+        else:
+            self.scan_token = uuid.uuid4().hex
+            self._generation = True
+            self.files_seen = 0
+            self.files_indexed = 0
+            self.files_skipped = 0
+            self.files_failed = 0
+            self.last_error = None
+            self.db.save_scan_checkpoint(self.scan_token, "indexing")
+        self.state = "indexing"
         prior = self.db.counts()["seen"]
         self.library_total = prior
         if prior <= 0:
@@ -255,8 +272,7 @@ class Indexer:
         window: list[Path] = []
         limit = max(1, self.settings.index_threads)
         while not self._halted():
-            self.drain()
-            self._drain_priority()
+            self._apply_pending()
             if self._halted():
                 break
             try:
@@ -271,13 +287,59 @@ class Indexer:
             self._index_window(window)
         if self._settle_cancel() or self._stop.is_set():
             return
-        self.drain()
-        removed = self.db.delete_stale(self.scan_token)
-        if removed:
-            logger.info("removed %s files that left the main disk", removed)
+        self._apply_pending()
+        if self._generation:
+            removed = self.db.delete_stale(self.scan_token)
+            if removed:
+                logger.info("removed %s files that left the main disk", removed)
+            self.db.save_scan_checkpoint(self.scan_token, "watching")
+        self.db.drop_missing(self.library)
         if self.state == "indexing":
             self.current_file = None
             self.state = "watching"
+
+    def _restore_token_counts(self) -> None:
+        counts = self.db.counts_for_token(self.scan_token)
+        self.files_seen = counts["seen"]
+        self.files_indexed = counts["indexed"]
+        self.files_skipped = counts["skipped"]
+        self.files_failed = counts["failed"]
+
+    def _restore_library_counts(self) -> None:
+        counts = self.db.counts()
+        self.files_seen = counts["seen"]
+        self.files_indexed = counts["indexed"]
+        self.files_skipped = counts["skipped"]
+        self.files_failed = counts["failed"]
+
+    def _counts_as_new(self, row: object) -> bool:
+        if row is None:
+            return True
+        if not self._generation:
+            return False
+        return str(row["scan_token"] or "") != self.scan_token or not self.scan_token
+
+    def _quiet(self, row: object, size: int, mtime: float) -> bool:
+        """True when this file is already stored and this pass can leave it alone."""
+        if row is None:
+            return False
+        if int(row["size"]) != size or float(row["mtime"]) != mtime:
+            return False
+        if row["status"] not in {"indexed", "skipped"}:
+            return False
+        if row["status"] == "indexed" and row["content_hash"] is None:
+            return False
+        if self._generation:
+            return str(row["scan_token"] or "") == self.scan_token and bool(self.scan_token)
+        return True
+
+    def _apply_pending(self) -> None:
+        try:
+            self.drain()
+            self._drain_priority()
+        except Exception:
+            logger.exception("index update failed")
+            self.last_error = "Indexing hit an unexpected error and will retry."
 
     def _drain_priority(self) -> None:
         if self._same is None:
@@ -322,6 +384,11 @@ class Indexer:
                     self.db.delete_path(relative)
                 continue
             if is_dir:
+                try:
+                    if path.resolve() == self.library.resolve():
+                        continue
+                except OSError:
+                    continue
                 if self._same is not None and not self._same(path):
                     logger.info("skip external mount %s", path)
                     continue
@@ -339,6 +406,7 @@ class Indexer:
                 if pending and not self._halted():
                     self._index_window(pending)
                 continue
+            self._visited.discard(relative)
             self._index_window([path])
 
     def _shutdown_pool(self) -> None:
@@ -385,7 +453,15 @@ class Indexer:
                 extracted.append(future.result())
             except Exception as exc:
                 logger.exception("failed to index %s", claim.relative)
-                self._fail(claim.relative, claim.path.name, claim.mime, claim.size, claim.mtime, exc)
+                self._fail(
+                    claim.relative,
+                    claim.path.name,
+                    claim.mime,
+                    claim.size,
+                    claim.mtime,
+                    exc,
+                    fresh=claim.fresh,
+                )
         self._embed_and_store(extracted)
 
     def _index_one(self, path: Path) -> None:
@@ -396,7 +472,15 @@ class Indexer:
             self._embed_and_store([self._extract(claim)])
         except Exception as exc:
             logger.exception("failed to index %s", claim.relative)
-            self._fail(claim.relative, claim.path.name, claim.mime, claim.size, claim.mtime, exc)
+            self._fail(
+                claim.relative,
+                claim.path.name,
+                claim.mime,
+                claim.size,
+                claim.mtime,
+                exc,
+                fresh=claim.fresh,
+            )
 
     def _prepare_claim(self, path: Path) -> _Claim | None:
         if self._same is not None and path.exists() and not self._same(path):
@@ -406,24 +490,35 @@ class Indexer:
             return None
         if self._halted():
             return None
-        self.current_file = relative
         if relative in self._visited:
-            self.db.touch_scan(relative, self.scan_token)
+            if self._generation:
+                self.db.touch_scan(relative, self.scan_token)
             return None
         self._visited.add(relative)
-        self.files_seen += 1
         try:
             stat_result = path.stat()
         except OSError as exc:
-            self.files_failed += 1
             self.last_error = f"{relative}: {exc}"
+            row = self.db.get_file(relative)
+            if self._counts_as_new(row):
+                self.files_seen += 1
+                self.files_failed += 1
             return None
+        row = self.db.get_file(relative)
+        if self._quiet(row, stat_result.st_size, stat_result.st_mtime):
+            return None
+        fresh = self._counts_as_new(row)
+        self.current_file = relative
+        if fresh:
+            self.files_seen += 1
         decision = classify(path, max_bytes=self.settings.max_file_bytes)
         if decision.action == "skip":
             existing = self.db.unchanged(relative, stat_result.st_size, stat_result.st_mtime)
             if existing is not None and existing["status"] == "skipped":
-                self.db.touch_scan(relative, self.scan_token)
-                self.files_skipped += 1
+                if self._generation:
+                    self.db.touch_scan(relative, self.scan_token)
+                if fresh:
+                    self.files_skipped += 1
                 return None
             self.db.mark_simple(
                 path=relative,
@@ -435,24 +530,28 @@ class Indexer:
                 reason=decision.reason,
                 scan_token=self.scan_token,
             )
-            self.files_skipped += 1
+            if fresh:
+                self.files_skipped += 1
             return None
         existing = self.db.unchanged(relative, stat_result.st_size, stat_result.st_mtime)
         if existing is not None and existing["status"] == "indexed":
-            self.db.touch_scan(relative, self.scan_token)
-            self.files_indexed += 1
+            if self._generation:
+                self.db.touch_scan(relative, self.scan_token)
+            if fresh:
+                self.files_indexed += 1
             return None
         try:
             digest = file_hash(path)
         except OSError as exc:
-            self._fail(relative, path.name, decision.mime, stat_result.st_size, stat_result.st_mtime, exc)
+            self._fail(relative, path.name, decision.mime, stat_result.st_size, stat_result.st_mtime, exc, fresh=fresh)
             return None
         previous_hash = self.db.hash_of(relative)
         if previous_hash == digest and existing is None:
-            row = self.db.get_file(relative)
-            if row is not None and row["status"] == "indexed":
+            stored = self.db.get_file(relative)
+            if stored is not None and stored["status"] == "indexed":
                 self.db.note_hash_only(relative, stat_result.st_size, stat_result.st_mtime, self.scan_token)
-                self.files_indexed += 1
+                if fresh:
+                    self.files_indexed += 1
                 return None
         return _Claim(
             path=path,
@@ -462,6 +561,7 @@ class Indexer:
             size=stat_result.st_size,
             mtime=stat_result.st_mtime,
             digest=digest,
+            fresh=fresh,
         )
 
     def _extract(self, claim: _Claim) -> _Extracted:
@@ -508,13 +608,29 @@ class Indexer:
             logger.exception("failed to embed a window of %s files", len(extracted))
             for item in extracted:
                 claim = item.claim
-                self._fail(claim.relative, claim.path.name, claim.mime, claim.size, claim.mtime, exc)
+                self._fail(
+                    claim.relative,
+                    claim.path.name,
+                    claim.mime,
+                    claim.size,
+                    claim.mtime,
+                    exc,
+                    fresh=claim.fresh,
+                )
             return
         if len(vectors) != len(passages):
             exc = RuntimeError(f"embedder returned {len(vectors)} vectors for {len(passages)} passages")
             for item in extracted:
                 claim = item.claim
-                self._fail(claim.relative, claim.path.name, claim.mime, claim.size, claim.mtime, exc)
+                self._fail(
+                    claim.relative,
+                    claim.path.name,
+                    claim.mime,
+                    claim.size,
+                    claim.mtime,
+                    exc,
+                    fresh=claim.fresh,
+                )
             return
         for item, (start, count) in zip(extracted, spans, strict=True):
             claim = item.claim
@@ -545,13 +661,33 @@ class Indexer:
                     scan_token=self.scan_token,
                     chunks=chunks,
                 )
-                self.files_indexed += 1
+                if claim.fresh:
+                    self.files_indexed += 1
             except Exception as exc:
                 logger.exception("failed to index %s", claim.relative)
-                self._fail(claim.relative, claim.path.name, claim.mime, claim.size, claim.mtime, exc)
+                self._fail(
+                    claim.relative,
+                    claim.path.name,
+                    claim.mime,
+                    claim.size,
+                    claim.mtime,
+                    exc,
+                    fresh=claim.fresh,
+                )
 
-    def _fail(self, relative: str, name: str, mime: str | None, size: int, mtime: float, exc: Exception) -> None:
-        self.files_failed += 1
+    def _fail(
+        self,
+        relative: str,
+        name: str,
+        mime: str | None,
+        size: int,
+        mtime: float,
+        exc: Exception,
+        *,
+        fresh: bool = True,
+    ) -> None:
+        if fresh:
+            self.files_failed += 1
         self.last_error = f"{relative}: {exc}"
         self.db.mark_simple(
             path=relative,
@@ -594,8 +730,7 @@ class Indexer:
             if self._cancel.is_set():
                 break
             self.state = "watching"
-            self.drain()
-            self._drain_priority()
+            self._apply_pending()
             self._stop.wait(0.5)
 
     def _ensure_watcher(self) -> None:
