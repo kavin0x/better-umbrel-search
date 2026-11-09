@@ -4,7 +4,7 @@ name: Search
 tagline: Find a file by what it is about
 icon: icon.svg
 category: files
-version: "3.3.2"
+version: "3.3.3"
 port: 8787
 storage:
   dataRoot: data
